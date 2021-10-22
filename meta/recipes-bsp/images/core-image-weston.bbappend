@@ -4,8 +4,10 @@ IMAGE_INSTALL_append = " \
                        iw \
                        wpa-supplicant \
                        kernel-modules \
+                       v4l-utils \
                        gst-examples \
                        gstreamer1.0-plugins-nvvideosinks \
                        gstreamer1.0-plugins-nvvidconv \
+                       pcbd-root-files \
                        "
 
