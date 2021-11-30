@@ -5,7 +5,7 @@
 
       $ cd ../
       $ git clone git://git.openembedded.org/meta-openembedded -b dunfell
-      $ git clone <meta-pcbd-tegra>
+      $ git clone https://github.com/bkardosa/meta-pcbd-tegra-dione.git meta-pcbd-tegra
       $ cp meta-pcbd-tegra/local.conf.sample build/conf/local.conf
       $ cd build/
       $ bitbake-layers add-layer ../meta-tegra/
@@ -23,6 +23,7 @@
       $ cd tmp
       $ tar -vxf ../core-image-weston-jetson-nano-2gb-devkit.tegraflash.tar.gz
       $ ./dosdcard.sh core-image-weston.img
+    core-image-weston.img uSD card image will be cretaed.
 
     Updating SPI flash of Jetson Nano:
     - boot up Jetson Nano in recovery mode

@@ -1,0 +1,741 @@
+From f89714d53cf52c39ec0ae1e9da0a0ad359f3d918 Mon Sep 17 00:00:00 2001
+From: Botond Kardos <bkardos70@gmail.com>
+Date: Mon, 29 Nov 2021 15:28:21 +0100
+Subject: [PATCH] experimental driver works with Dione1280 camera
+
+---
+ nvidia/drivers/media/i2c/dione640.c           | 265 ++++++++++--------
+ .../tegra210-camera-rbpcv2-dione640.dtsi      |  10 +-
+ .../tegra210-porg-camera-rbpcv2-dione640.dtsi |   2 +
+ 3 files changed, 160 insertions(+), 117 deletions(-)
+
+diff --git a/nvidia/drivers/media/i2c/dione640.c b/nvidia/drivers/media/i2c/dione640.c
+index c1c7f2c6dc87..8471db16b6c9 100644
+--- a/nvidia/drivers/media/i2c/dione640.c
++++ b/nvidia/drivers/media/i2c/dione640.c
+@@ -32,14 +32,17 @@
+ 
+ #include "tc358746_regs.h"
+ 
++#include "../drivers/base/regmap/internal.h"
++
+ static int test_mode = 0;
+ module_param(test_mode, int, 0644);
+ 
+ enum {
+-	DIONE640_MODE_640x480_60FPS,
++	/* DIONE641_MODE_640x480_60FPS, */
++	DIONE641_MODE_1280x1024_60FPS,
+ };
+ 
+-static const int dione640_60fps[] = {
++static const int dione641_60fps[] = {
+ 	60,
+ };
+ 
+@@ -47,8 +50,8 @@ static const int dione640_60fps[] = {
+  * WARNING: frmfmt ordering need to match mode definition in
+  * device tree!
+  */
+-static const struct camera_common_frmfmt dione640_frmfmt[] = {
+-	{{640, 480},	dione640_60fps, 1, 0, DIONE640_MODE_640x480_60FPS},
++static const struct camera_common_frmfmt dione641_frmfmt[] = {
++	{{1280, 1024},	dione641_60fps, 1, 0, DIONE641_MODE_1280x1024_60FPS},
+ 	/* Add modes with no device tree support after below */
+ };
+ 
+@@ -96,11 +99,11 @@ static const struct regmap_config tx_regmap_config = {
+ 	.name = "tc358746-tx",
+ };
+ 
+-static const struct of_device_id dione640_of_match[] = {
++static const struct of_device_id dione641_of_match[] = {
+ 	{ .compatible = "xenics,dione64", },
+ 	{ },
+ };
+-MODULE_DEVICE_TABLE(of, dione640_of_match);
++MODULE_DEVICE_TABLE(of, dione641_of_match);
+ 
+ static const u32 ctrl_cid_list[] = {
+ 	TEGRA_CAMERA_CID_GAIN,
+@@ -117,7 +120,7 @@ struct dione640 {
+ 	struct tegracam_device		*tc_dev;
+ };
+ 
+-static inline int dione640_read_reg(struct camera_common_data *s_data,
++static inline int dione641_read_reg(struct camera_common_data *s_data,
+ 	u16 addr, u8 *val)
+ {
+ 	int err = 0;
+@@ -129,12 +132,43 @@ static inline int dione640_read_reg(struct camera_common_data *s_data,
+ 	return err;
+ }
+ 
+-static inline int dione640_write_reg(struct camera_common_data *s_data,
++#define my_regmap_write2(m, r, v) my_regmap_write(__func__, __LINE__, m, r, v)
++
++static inline int my_regmap_write(const char * func, int line,
++								  struct regmap *map, unsigned int reg, unsigned int val)
++{
++    printk( KERN_ALERT "**** %s %i   regmap: %s   reg: 0x%04x    val: 0x%04x\n",
++			func, line, map->name, reg, val );
++
++	return regmap_write(map, reg, val);
++}
++
++#define my_regmap_update_bits2(m, r, msk, v) my_regmap_update_bits(__func__, __LINE__, m, r, msk, v)
++
++static inline int my_regmap_update_bits(const char * func, int line,
++										struct regmap *map, unsigned int reg,
++										unsigned int mask, unsigned int val)
++{
++    int ret1, ret2;
++	unsigned int reg_val;
++
++	ret1 = regmap_update_bits(map, reg, mask, val);
++	ret2 = regmap_read(map, reg, &reg_val);
++    printk( KERN_ALERT "**** %s %i   regmap: %s   reg: 0x%04x   val: 0x%04x    ret: %i\n",
++			func, line, map->name, reg, val, ret2 );
++
++	return ret1;
++}
++
++static inline int dione641_write_reg(struct camera_common_data *s_data,
+ 	u16 addr, u8 val)
+ {
+ 	int err = 0;
+ 
+-	err = regmap_write(s_data->regmap, addr, val);
++    printk( KERN_ALERT "**** %s %i   addr: 0x%04x    val: 0x%02x\n",
++			__func__, __LINE__,	(int )addr, (int )val );
++
++	err = my_regmap_write2(s_data->regmap, addr, val);
+ 	if (err)
+ 		dev_err(s_data->dev, "%s: i2c write failed, 0x%x = %x",
+ 			__func__, addr, val);
+@@ -142,40 +176,40 @@ static inline int dione640_write_reg(struct camera_common_data *s_data,
+ 	return err;
+ }
+ 
+-static int dione640_set_group_hold(struct tegracam_device *tc_dev, bool val)
++static int dione641_set_group_hold(struct tegracam_device *tc_dev, bool val)
+ {
+ 	dev_dbg(tc_dev->dev, "%s val=%d\n", __func__, val);
+ 	return 0;
+ }
+ 
+-static int dione640_set_gain(struct tegracam_device *tc_dev, s64 val)
++static int dione641_set_gain(struct tegracam_device *tc_dev, s64 val)
+ {
+ 	dev_dbg(tc_dev->dev, "%s val=%lld\n", __func__, val);
+ 	return 0;
+ }
+ 
+-static int dione640_set_frame_rate(struct tegracam_device *tc_dev, s64 val)
++static int dione641_set_frame_rate(struct tegracam_device *tc_dev, s64 val)
+ {
+ 	dev_dbg(tc_dev->dev, "%s val=%lld\n", __func__, val);
+ 	return 0;
+ }
+ 
+-static int dione640_set_exposure(struct tegracam_device *tc_dev, s64 val)
++static int dione641_set_exposure(struct tegracam_device *tc_dev, s64 val)
+ {
+ 	dev_dbg(tc_dev->dev, "%s val=%lld\n", __func__, val);
+ 	return 0;
+ }
+ 
+-static struct tegracam_ctrl_ops dione640_ctrl_ops = {
++static struct tegracam_ctrl_ops dione641_ctrl_ops = {
+ 	.numctrls = ARRAY_SIZE(ctrl_cid_list),
+ 	.ctrl_cid_list = ctrl_cid_list,
+-	.set_gain = dione640_set_gain,
+-	.set_exposure = dione640_set_exposure,
+-	.set_frame_rate = dione640_set_frame_rate,
+-	.set_group_hold = dione640_set_group_hold,
++	.set_gain = dione641_set_gain,
++	.set_exposure = dione641_set_exposure,
++	.set_frame_rate = dione641_set_frame_rate,
++	.set_group_hold = dione641_set_group_hold,
+ };
+ 
+-static int dione640_power_on(struct camera_common_data *s_data)
++static int dione641_power_on(struct camera_common_data *s_data)
+ {
+ 	int err = 0;
+ 	struct camera_common_power_rail *pw = s_data->power;
+@@ -250,7 +284,7 @@ static int dione640_power_on(struct camera_common_data *s_data)
+ 	return -ENODEV;
+ }
+ 
+-static int dione640_power_off(struct camera_common_data *s_data)
++static int dione641_power_off(struct camera_common_data *s_data)
+ {
+ 	int err = 0;
+ 	struct camera_common_power_rail *pw = s_data->power;
+@@ -288,7 +322,7 @@ static int dione640_power_off(struct camera_common_data *s_data)
+ 	return 0;
+ }
+ 
+-static int dione640_power_put(struct tegracam_device *tc_dev)
++static int dione641_power_put(struct tegracam_device *tc_dev)
+ {
+ 	struct camera_common_data *s_data = tc_dev->s_data;
+ 	struct camera_common_power_rail *pw = s_data->power;
+@@ -315,7 +349,7 @@ static int dione640_power_put(struct tegracam_device *tc_dev)
+ 	return 0;
+ }
+ 
+-static int dione640_power_get(struct tegracam_device *tc_dev)
++static int dione641_power_get(struct tegracam_device *tc_dev)
+ {
+ 	struct device *dev = tc_dev->dev;
+ 	struct camera_common_data *s_data = tc_dev->s_data;
+@@ -380,7 +414,7 @@ static int dione640_power_get(struct tegracam_device *tc_dev)
+ 	return err;
+ }
+ 
+-static struct camera_common_pdata *dione640_parse_dt(
++static struct camera_common_pdata *dione641_parse_dt(
+ 	struct tegracam_device *tc_dev)
+ {
+ 	struct device *dev = tc_dev->dev;
+@@ -394,7 +428,7 @@ static struct camera_common_pdata *dione640_parse_dt(
+ 	if (!np)
+ 		return NULL;
+ 
+-	match = of_match_device(dione640_of_match, dev);
++	match = of_match_device(dione641_of_match, dev);
+ 	if (!match) {
+ 		dev_err(dev, "Failed to find matching dt id\n");
+ 		return NULL;
+@@ -442,7 +476,7 @@ static struct camera_common_pdata *dione640_parse_dt(
+ 
+ static inline int tc358746_sleep_mode(struct regmap *regmap, int enable)
+ {
+-	return regmap_update_bits(regmap, SYSCTL, SYSCTL_SLEEP_MASK,
++	return my_regmap_update_bits2(regmap, SYSCTL, SYSCTL_SLEEP_MASK,
+ 				  enable ? SYSCTL_SLEEP_MASK : 0);
+ }
+ 
+@@ -450,12 +484,12 @@ static inline int tc358746_sreset(struct regmap *regmap)
+ {
+ 	int err;
+ 
+-	err = regmap_write(regmap, SYSCTL, SYSCTL_SRESET_MASK);
++	err = my_regmap_write2(regmap, SYSCTL, SYSCTL_SRESET_MASK);
+ 
+ 	udelay(10);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, SYSCTL, 0);
++		err = my_regmap_write2(regmap, SYSCTL, 0);
+ 
+ 	return err;
+ }
+@@ -466,6 +500,8 @@ static int tc358746_set_pll(struct regmap *regmap,
+ 	u32 pllctl0, pllctl1, pllctl0_new;
+ 	int err;
+ 
++    printk( KERN_ALERT "**** %s %i\n", __func__, __LINE__ );
++
+ 	err = regmap_read(regmap, PLLCTL0, &pllctl0);
+ 	if (!err)
+ 		err = regmap_read(regmap, PLLCTL1, &pllctl1);
+@@ -476,6 +512,9 @@ static int tc358746_set_pll(struct regmap *regmap,
+ 	pllctl0_new = PLLCTL0_PLL_PRD_SET(pll_prd) |
+ 		PLLCTL0_PLL_FBD_SET(pll_fbd);
+ 
++    printk( KERN_ALERT "**** %s %i   pllctl0: 0x%04x   pllctl1: 0x%04x   pllctl0_new: 0x%04x\n",
++			__func__, __LINE__, pllctl0, pllctl1, pllctl0_new );
++
+ 	/*
+ 	 * Only rewrite when needed (new value or disabled), since rewriting
+ 	 * triggers another format change event.
+@@ -487,14 +526,14 @@ static int tc358746_set_pll(struct regmap *regmap,
+ 		u16 pllctl1_val = PLLCTL1_PLL_FRS_SET(pll_frs) |
+ 				  PLLCTL1_RESETB_MASK | PLLCTL1_PLL_EN_MASK;
+ 
+-		err = regmap_write(regmap, PLLCTL0, pllctl0_new);
++		err = my_regmap_write2(regmap, PLLCTL0, pllctl0_new);
+ 		if (!err)
+-			err = regmap_update_bits(regmap, PLLCTL1,
++			err = my_regmap_update_bits2(regmap, PLLCTL1,
+ 						 pllctl1_mask, pllctl1_val);
+ 		udelay(1000);
+ 
+ 		if (!err)
+-			err = regmap_update_bits(regmap, PLLCTL1,
++			err = my_regmap_update_bits2(regmap, PLLCTL1,
+ 						 PLLCTL1_CKEN_MASK,
+ 						 PLLCTL1_CKEN_MASK);
+ 	}
+@@ -507,12 +546,12 @@ static int tc358746_set_csi_color_space(struct regmap *regmap,
+ {
+ 	int err;
+ 
+-	err = regmap_update_bits(regmap, DATAFMT,
++	err = my_regmap_update_bits2(regmap, DATAFMT,
+ 				 (DATAFMT_PDFMT_MASK | DATAFMT_UDT_EN_MASK),
+ 				 DATAFMT_PDFMT_SET(pdformat));
+ 
+ 	if (!err)
+-		err = regmap_update_bits(regmap, CONFCTL, CONFCTL_PDATAF_MASK,
++		err = my_regmap_update_bits2(regmap, CONFCTL, CONFCTL_PDATAF_MASK,
+ 					 CONFCTL_PDATAF_SET(pdataf));
+ 
+ 	return err;
+@@ -524,10 +563,10 @@ static int tc358746_set_buffers(struct regmap *regmap,
+ 	unsigned int byte_per_line = (fmt_width * bpp) / 8;
+ 	int err;
+ 
+-	err = regmap_write(regmap, FIFOCTL, vb_fifo);
++	err = my_regmap_write2(regmap, FIFOCTL, vb_fifo);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, WORDCNT, byte_per_line);
++		err = my_regmap_write2(regmap, WORDCNT, byte_per_line);
+ 
+ 	return err;
+ }
+@@ -540,28 +579,28 @@ static int tc358746_enable_csi_lanes(struct regmap *regmap,
+ 
+ 	if (lane_num < 1 || !enable) {
+ 		if (!err)
+-			err = regmap_write(regmap, CLW_CNTRL,
++			err = my_regmap_write2(regmap, CLW_CNTRL,
+ 					   CLW_CNTRL_CLW_LANEDISABLE_MASK);
+ 		if (!err)
+-			err = regmap_write(regmap, D0W_CNTRL,
++			err = my_regmap_write2(regmap, D0W_CNTRL,
+ 					   D0W_CNTRL_D0W_LANEDISABLE_MASK);
+ 	}
+ 
+ 	if (lane_num < 2 || !enable) {
+ 		if (!err)
+-			err = regmap_write(regmap, D1W_CNTRL,
++			err = my_regmap_write2(regmap, D1W_CNTRL,
+ 					   D1W_CNTRL_D1W_LANEDISABLE_MASK);
+ 	}
+ 
+ 	if (lane_num < 3 || !enable) {
+ 		if (!err)
+-			err = regmap_write(regmap, D2W_CNTRL,
++			err = my_regmap_write2(regmap, D2W_CNTRL,
+ 					   D2W_CNTRL_D2W_LANEDISABLE_MASK);
+ 	}
+ 
+ 	if (lane_num < 4 || !enable) {
+ 		if (!err)
+-			err = regmap_write(regmap, D3W_CNTRL,
++			err = my_regmap_write2(regmap, D3W_CNTRL,
+ 					   D2W_CNTRL_D3W_LANEDISABLE_MASK);
+ 	}
+ 
+@@ -580,7 +619,7 @@ static int tc358746_enable_csi_lanes(struct regmap *regmap,
+ 		val |= HSTXVREGEN_D3M_HSTXVREGEN_MASK;
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, HSTXVREGEN, val);
++		err = my_regmap_write2(regmap, HSTXVREGEN, val);
+ 
+ 	return err;
+ }
+@@ -609,24 +648,24 @@ static void tc358746_csi_param_set_default(
+ {
+ 	param->is_continuous_clk = !discontinuous_clk;
+ 
+-	param->lineinitcnt = 4000;
+-	param->lptxtimecnt = 3;
++	param->lineinitcnt = 6500;
++	param->lptxtimecnt = 6;
+ 
+-	param->tclk_preparecnt = 2;
+-	param->tclk_zerocnt = 18;
++	param->tclk_preparecnt = 6;
++	param->tclk_zerocnt = 35;
+ 
+ 	/* default, skipped but value in excell = 0 */
+-	param->tclk_trailcnt = 1;
++	param->tclk_trailcnt = 4;
+ 
+-	param->ths_preparecnt = 3;
+-	param->ths_zerocnt = 0;
++	param->ths_preparecnt = 6;
++	param->ths_zerocnt = 8;
+ 
+-	param->twakeupcnt = 17000;
++	param->twakeupcnt = 25000;
+ 
+ 	/* default, skipped but value in excell = 4 */
+-	param->tclk_postcnt = 0;
++	param->tclk_postcnt = 12;
+ 
+-	param->ths_trailcnt = 1;
++	param->ths_trailcnt = 5;
+ 
+ 	/* only presents in the excell, default: 32 */
+ 	param->hstxvregcnt = 5;
+@@ -640,37 +679,37 @@ static int tc358746_set_csi(struct regmap *regmap,
+ 
+ 	val = TCLK_HEADERCNT_TCLK_ZEROCNT_SET(param->tclk_zerocnt) |
+ 	      TCLK_HEADERCNT_TCLK_PREPARECNT_SET(param->tclk_preparecnt);
+-	err = regmap_write(regmap, TCLK_HEADERCNT, val);
++	err = my_regmap_write2(regmap, TCLK_HEADERCNT, val);
+ 
+ 	val = THS_HEADERCNT_THS_ZEROCNT_SET(param->ths_zerocnt) |
+ 	      THS_HEADERCNT_THS_PREPARECNT_SET(param->ths_preparecnt);
+ 	if (!err)
+-		err = regmap_write(regmap, THS_HEADERCNT, val);
++		err = my_regmap_write2(regmap, THS_HEADERCNT, val);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, TWAKEUP, param->twakeupcnt);
++		err = my_regmap_write2(regmap, TWAKEUP, param->twakeupcnt);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, TCLK_POSTCNT, param->tclk_postcnt);
++		err = my_regmap_write2(regmap, TCLK_POSTCNT, param->tclk_postcnt);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, THS_TRAILCNT, param->ths_trailcnt);
++		err = my_regmap_write2(regmap, THS_TRAILCNT, param->ths_trailcnt);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, LINEINITCNT, param->lineinitcnt);
++		err = my_regmap_write2(regmap, LINEINITCNT, param->lineinitcnt);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, LPTXTIMECNT, param->lptxtimecnt);
++		err = my_regmap_write2(regmap, LPTXTIMECNT, param->lptxtimecnt);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, TCLK_TRAILCNT, param->tclk_trailcnt);
++		err = my_regmap_write2(regmap, TCLK_TRAILCNT, param->tclk_trailcnt);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, HSTXVREGCNT, param->hstxvregcnt);
++		err = my_regmap_write2(regmap, HSTXVREGCNT, param->hstxvregcnt);
+ 
+ 	val = param->is_continuous_clk ? TXOPTIONCNTRL_CONTCLKMODE_MASK : 0;
+ 	if (!err)
+-		err = regmap_write(regmap, TXOPTIONCNTRL, val);
++		err = my_regmap_write2(regmap, TXOPTIONCNTRL, val);
+ 
+ 	return err;
+ }
+@@ -681,7 +720,8 @@ static int tc38764_debug_pattern_80(struct regmap *regmap)
+ 
+ 	err = regmap_write(regmap, DBG_ACT_LINE_CNT, 0x8000);
+ 	if (!err)
+-		err = regmap_write(regmap, DBG_LINE_WIDTH, 0x0821);
++		/* err = regmap_write(regmap, DBG_LINE_WIDTH, 0x0821); */
++		err = regmap_write(regmap, DBG_LINE_WIDTH, 0x0fa1);
+ 	if (!err)
+ 		err = regmap_write(regmap, DBG_VERT_BLANK_LINE_CNT, 0);
+ 
+@@ -760,7 +800,7 @@ static int tc358746_wr_csi_control(struct regmap *regmap, u32 val)
+ 	_val = CSI_CONFW_MODE_SET_MASK | CSI_CONFW_ADDRESS_CSI_CONTROL_MASK |
+ 		val;
+ 
+-	return regmap_write(regmap, CSI_CONFW, _val);
++	return my_regmap_write2(regmap, CSI_CONFW, _val);
+ }
+ 
+ static int tc358746_enable_csi_module(struct regmap *regmap, int lane_num)
+@@ -768,10 +808,10 @@ static int tc358746_enable_csi_module(struct regmap *regmap, int lane_num)
+ 	u32 val;
+ 	int err;
+ 
+-	err = regmap_write(regmap, STARTCNTRL, STARTCNTRL_START_MASK);
++	err = my_regmap_write2(regmap, STARTCNTRL, STARTCNTRL_START_MASK);
+ 
+ 	if (!err)
+-		err = regmap_write(regmap, CSI_START, CSI_START_STRT_MASK);
++		err = my_regmap_write2(regmap, CSI_START, CSI_START_STRT_MASK);
+ 
+ 	val = CSI_CONTROL_NOL_1_MASK;
+ 	if (lane_num == 2)
+@@ -790,7 +830,7 @@ static int tc358746_enable_csi_module(struct regmap *regmap, int lane_num)
+ 	return err;
+ }
+ 
+-static int dione640_set_mode(struct tegracam_device *tc_dev)
++static int dione641_set_mode(struct tegracam_device *tc_dev)
+ {
+ 	struct dione640 *priv = (struct dione640 *)tegracam_get_privdata(tc_dev);
+ 	struct camera_common_data *s_data = priv->s_data;
+@@ -821,16 +861,16 @@ static int dione640_set_mode(struct tegracam_device *tc_dev)
+ 	 *
+ 	 * 5. test_mode
+ 	 */
+-	u16 pll_prd = 3, pll_fbd = 82, pll_frs = 1;
++	u16 pll_prd = 3, pll_fbd = 125, pll_frs = 0;
+ 	u8 pdformat = 0x3, pdataf = 0x0;
+-	u32 fmt_width = 640; u8 bpp = 24; u16 vb_fifo = 247;
++	u32 fmt_width = 1280; u8 bpp = 24; u16 vb_fifo = 2;
+ 	int lane_num = 2;
+ 	struct tc358746_csi_param csi_setting;
+-	bool discontinuous_clk = true;
++	bool discontinuous_clk = false;
+ 
+ 	tc358746_csi_param_set_default(&csi_setting, discontinuous_clk);
+ 
+-	regmap_write(ctl_regmap, DBG_ACT_LINE_CNT, 0);
++	my_regmap_write2(ctl_regmap, DBG_ACT_LINE_CNT, 0);
+ 
+ 	err = tc358746_sreset(ctl_regmap);
+ 	if (err) {
+@@ -866,20 +906,21 @@ static int dione640_set_mode(struct tegracam_device *tc_dev)
+ 	return err;
+ }
+ 
+-static int dione640_start_streaming(struct tegracam_device *tc_dev)
++static int dione641_start_streaming(struct tegracam_device *tc_dev)
+ {
+ 	struct dione640 *priv = (struct dione640 *)tegracam_get_privdata(tc_dev);
+ 	struct camera_common_data *s_data = priv->s_data;
+ 	struct regmap *ctl_regmap = s_data->regmap;
+ 	int err;
+ 
+-	err = regmap_write(ctl_regmap, PP_MISC, 0);
++	err = my_regmap_write2(ctl_regmap, PP_MISC, 0);
+ 	if (test_mode) {
+ 		if (!err)
+-			err = regmap_write(ctl_regmap, DBG_ACT_LINE_CNT, 0xc1df);
++			/* err = my_regmap_write2(ctl_regmap, DBG_ACT_LINE_CNT, 0xc1df); */
++			err = my_regmap_write2(ctl_regmap, DBG_ACT_LINE_CNT, 0xc3fe);
+ 	} else {
+ 		if (!err)
+-			err = regmap_update_bits(ctl_regmap, CONFCTL,
++			err = my_regmap_update_bits2(ctl_regmap, CONFCTL,
+ 						 CONFCTL_PPEN_MASK,
+ 						 CONFCTL_PPEN_MASK);
+ 	}
+@@ -889,7 +930,7 @@ static int dione640_start_streaming(struct tegracam_device *tc_dev)
+ 	return err;
+ }
+ 
+-static int dione640_stop_streaming(struct tegracam_device *tc_dev)
++static int dione641_stop_streaming(struct tegracam_device *tc_dev)
+ {
+ 	struct dione640 *priv = (struct dione640 *)tegracam_get_privdata(tc_dev);
+ 	struct camera_common_data *s_data = priv->s_data;
+@@ -897,45 +938,45 @@ static int dione640_stop_streaming(struct tegracam_device *tc_dev)
+ 	struct regmap *tx_regmap = priv->tx_regmap;
+ 	int err;
+ 
+-	err = regmap_update_bits(ctl_regmap, PP_MISC, PP_MISC_FRMSTOP_MASK,
++	err = my_regmap_update_bits2(ctl_regmap, PP_MISC, PP_MISC_FRMSTOP_MASK,
+ 				 PP_MISC_FRMSTOP_MASK);
+ 	if (!err)
+-		err = regmap_update_bits(ctl_regmap, CONFCTL,
++		err = my_regmap_update_bits2(ctl_regmap, CONFCTL,
+ 					 CONFCTL_PPEN_MASK, 0);
+ 
+ 	if (!err)
+-		err = regmap_update_bits(ctl_regmap, PP_MISC,
++		err = my_regmap_update_bits2(ctl_regmap, PP_MISC,
+ 					 PP_MISC_RSTPTR_MASK,
+ 					 PP_MISC_RSTPTR_MASK);
+ 
+ 	if (!err)
+-		err = regmap_write(tx_regmap, CSIRESET,
++		err = my_regmap_write2(tx_regmap, CSIRESET,
+ 				   (CSIRESET_RESET_CNF_MASK |
+ 				    CSIRESET_RESET_MODULE_MASK));
+ 	if (!err)
+-		err = regmap_write(ctl_regmap, DBG_ACT_LINE_CNT, 0);
++		err = my_regmap_write2(ctl_regmap, DBG_ACT_LINE_CNT, 0);
+ 
+ 	if (err)
+ 		dev_err(tc_dev->dev, "%s return code (%d)\n", __func__, err);
+ 	return err;
+ }
+ 
+-static struct camera_common_sensor_ops dione640_common_ops = {
+-	.numfrmfmts = ARRAY_SIZE(dione640_frmfmt),
+-	.frmfmt_table = dione640_frmfmt,
+-	.power_on = dione640_power_on,
+-	.power_off = dione640_power_off,
+-	.write_reg = dione640_write_reg,
+-	.read_reg = dione640_read_reg,
+-	.parse_dt = dione640_parse_dt,
+-	.power_get = dione640_power_get,
+-	.power_put = dione640_power_put,
+-	.set_mode = dione640_set_mode,
+-	.start_streaming = dione640_start_streaming,
+-	.stop_streaming = dione640_stop_streaming,
++static struct camera_common_sensor_ops dione641_common_ops = {
++	.numfrmfmts = ARRAY_SIZE(dione641_frmfmt),
++	.frmfmt_table = dione641_frmfmt,
++	.power_on = dione641_power_on,
++	.power_off = dione641_power_off,
++	.write_reg = dione641_write_reg,
++	.read_reg = dione641_read_reg,
++	.parse_dt = dione641_parse_dt,
++	.power_get = dione641_power_get,
++	.power_put = dione641_power_put,
++	.set_mode = dione641_set_mode,
++	.start_streaming = dione641_start_streaming,
++	.stop_streaming = dione641_stop_streaming,
+ };
+ 
+-static int dione640_board_setup(struct dione640 *priv)
++static int dione641_board_setup(struct dione640 *priv)
+ {
+ 	struct camera_common_data *s_data = priv->s_data;
+ 	struct camera_common_pdata *pdata = s_data->pdata;
+@@ -952,7 +993,7 @@ static int dione640_board_setup(struct dione640 *priv)
+ 		}
+ 	}
+ 
+-	err = dione640_power_on(s_data);
++	err = dione641_power_on(s_data);
+ 	if (err) {
+ 		dev_err(dev, "error during power on sensor (%d)\n", err);
+ 		goto err_power_on;
+@@ -974,7 +1015,7 @@ static int dione640_board_setup(struct dione640 *priv)
+ 	}
+ 
+ err_reg_probe:
+-	dione640_power_off(s_data);
++	dione641_power_off(s_data);
+ 
+ err_power_on:
+ 	if (pdata->mclk_name)
+@@ -984,7 +1025,7 @@ static int dione640_board_setup(struct dione640 *priv)
+ 	return err;
+ }
+ 
+-static int dione640_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++static int dione641_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+ {
+ 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+ 
+@@ -993,11 +1034,11 @@ static int dione640_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+ 	return 0;
+ }
+ 
+-static const struct v4l2_subdev_internal_ops dione640_subdev_internal_ops = {
+-	.open = dione640_open,
++static const struct v4l2_subdev_internal_ops dione641_subdev_internal_ops = {
++	.open = dione641_open,
+ };
+ 
+-static int dione640_probe(struct i2c_client *client,
++static int dione641_probe(struct i2c_client *client,
+ 	const struct i2c_device_id *id)
+ {
+ 	struct device *dev = &client->dev;
+@@ -1022,9 +1063,9 @@ static int dione640_probe(struct i2c_client *client,
+ 	tc_dev->dev = dev;
+ 	strncpy(tc_dev->name, "dione64", sizeof(tc_dev->name));
+ 	tc_dev->dev_regmap_config = &ctl_regmap_config;
+-	tc_dev->sensor_ops = &dione640_common_ops;
+-	tc_dev->v4l2sd_internal_ops = &dione640_subdev_internal_ops;
+-	tc_dev->tcctrl_ops = &dione640_ctrl_ops;
++	tc_dev->sensor_ops = &dione641_common_ops;
++	tc_dev->v4l2sd_internal_ops = &dione641_subdev_internal_ops;
++	tc_dev->tcctrl_ops = &dione641_ctrl_ops;
+ 
+ 	err = tegracam_device_register(tc_dev);
+ 	if (err) {
+@@ -1046,7 +1087,7 @@ static int dione640_probe(struct i2c_client *client,
+ 		return -ENODEV;
+ 	}
+ 
+-	err = dione640_board_setup(priv);
++	err = dione641_board_setup(priv);
+ 	if (err) {
+ 		tegracam_device_unregister(tc_dev);
+ 		dev_err(dev, "board setup failed\n");
+@@ -1065,7 +1106,7 @@ static int dione640_probe(struct i2c_client *client,
+ 	return 0;
+ }
+ 
+-static int dione640_remove(struct i2c_client *client)
++static int dione641_remove(struct i2c_client *client)
+ {
+ 	struct camera_common_data *s_data = to_camera_common_data(&client->dev);
+ 	struct dione640 *priv = (struct dione640 *)s_data->priv;
+@@ -1076,23 +1117,23 @@ static int dione640_remove(struct i2c_client *client)
+ 	return 0;
+ }
+ 
+-static const struct i2c_device_id dione640_id[] = {
++static const struct i2c_device_id dione641_id[] = {
+ 	{ "dione64", 0 },
+ 	{ }
+ };
+-MODULE_DEVICE_TABLE(i2c, dione640_id);
++MODULE_DEVICE_TABLE(i2c, dione641_id);
+ 
+-static struct i2c_driver dione640_i2c_driver = {
++static struct i2c_driver dione641_i2c_driver = {
+ 	.driver = {
+ 		.name = "dione64",
+ 		.owner = THIS_MODULE,
+-		.of_match_table = of_match_ptr(dione640_of_match),
++		.of_match_table = of_match_ptr(dione641_of_match),
+ 	},
+-	.probe = dione640_probe,
+-	.remove = dione640_remove,
+-	.id_table = dione640_id,
++	.probe = dione641_probe,
++	.remove = dione641_remove,
++	.id_table = dione641_id,
+ };
+-module_i2c_driver(dione640_i2c_driver);
++module_i2c_driver(dione641_i2c_driver);
+ 
+ MODULE_DESCRIPTION("Media Controller driver for Xenics Dione640");
+ MODULE_AUTHOR("Xenics Infrared Solutions / Peter Rozsahegyi");
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi
+index 56ad44c52685..acb00cc640b9 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi
+@@ -170,14 +170,14 @@
+ 					dpcm_enable = "false";
+ 					cil_settletime = "0";
+ 
+-					active_w = "640";
+-					active_h = "480";
++					active_w = "1280";
++					active_h = "1024";
+ 					pixel_t = "rgb_rgb88824";
+ 					readout_orientation = "0";
+-					line_length = "694";
++					line_length = "1334";
+ 					/* inherent_gain = "1"; */
+ 					/* mclk_multiplier = "9.33"; */
+-					pix_clk_hz = "20000000";
++					pix_clk_hz = "83000000";
+ 
+ 					/* unused */
+ 					gain_factor = "16";
+@@ -194,7 +194,7 @@
+ 					min_framerate = "40000000"; /* 40 fps */
+ 					max_framerate = "62000000"; /* 62 fps */
+ 					step_framerate = "1";
+-					default_framerate = "60020000"; /* 60.020 fps */
++					default_framerate = "60756000"; /* 60.756 fps */
+ 
+ 					/* unused */
+ 					min_exp_time = "13"; /* us */
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera-rbpcv2-dione640.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera-rbpcv2-dione640.dtsi
+index 296e1d2c8eae..39754c0338da 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera-rbpcv2-dione640.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera-rbpcv2-dione640.dtsi
+@@ -22,6 +22,8 @@
+ / {
+     host1x {
+ 		i2c@546c0000 {
++			clock-frequency = <1000000>;
++
+ 			rbpcv2_dione640_a@0e {
+ 				status = "disabled";
+ 				reset-gpios = <&gpio CAM1_PWDN GPIO_ACTIVE_HIGH>;
+-- 
+2.25.1
+

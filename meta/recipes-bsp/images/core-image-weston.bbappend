@@ -9,5 +9,8 @@ IMAGE_INSTALL_append = " \
                        gstreamer1.0-plugins-nvvideosinks \
                        gstreamer1.0-plugins-nvvidconv \
                        pcbd-root-files \
+                       python3 \
+                       python3-pip \
+                       python3-smbus \
                        "
 
