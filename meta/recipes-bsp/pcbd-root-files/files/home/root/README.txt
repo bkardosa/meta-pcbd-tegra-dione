@@ -2,7 +2,7 @@
       # v4l2-ctl -l
 
     GStreamer live stream:
-      # gst-launch-1.0 v4l2src device=/dev/video0 ! video/x-raw,format=BGRA,width=1280,height=1024 ! videoconvert ! video/x-raw,format=NV12 ! nvvidconv ! nvoverlaysink
+      # gst-launch-1.0 v4l2src device=/dev/video0 ! video/x-raw,format=BGRA,width=1280,height=1024 ! videoconvert ! video/x-raw,format=NV12 ! nvvidconv ! nvoverlaysink sync=false
 
     Capture one raw fram:
       # v4l2-ctl --set-fmt-video=width=1280,height=1024 --set-ctrl bypass_mode=0 --stream-mmap --stream-count=1 --stream-to=frame_001.raw
