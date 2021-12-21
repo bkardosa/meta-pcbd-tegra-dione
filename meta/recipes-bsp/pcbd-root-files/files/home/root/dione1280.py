@@ -82,7 +82,7 @@ class dione1280(object):
     time.sleep(0.01)
     self.fw.write(out)
     time.sleep(0.01)
-    print(self.fr.read(2))
+    # print(self.fr.read(2))
 
 
   def exec_file_op(self, op):
