@@ -1,0 +1,644 @@
+From b77c6a01a6f54bd7ceb8422e6b3f82a5a7d7c306 Mon Sep 17 00:00:00 2001
+From: Botond Kardos <bkardos70@gmail.com>
+Date: Wed, 22 Dec 2021 14:45:32 +0100
+Subject: [PATCH] dione640 driver uses new I2C model, not finalized yet
+
+dione640 added again to device-tree plugin-manager
+---
+ nvidia/drivers/media/i2c/dione640.c           |  96 +++++--
+ .../tegra210-camera-rbpcv2-dione640.dtsi      |  10 +-
+ .../porg-platforms/tegra210-porg-camera.dtsi  |   2 +-
+ .../tegra210-porg-plugin-manager.dtsi         | 265 ++++++------------
+ .../tegra210-porg-p3448-common.dtsi           |   2 +-
+ 5 files changed, 178 insertions(+), 197 deletions(-)
+
+diff --git a/nvidia/drivers/media/i2c/dione640.c b/nvidia/drivers/media/i2c/dione640.c
+index c1c7f2c6dc87..b8265c88aa4b 100644
+--- a/nvidia/drivers/media/i2c/dione640.c
++++ b/nvidia/drivers/media/i2c/dione640.c
+@@ -96,6 +96,27 @@ static const struct regmap_config tx_regmap_config = {
+ 	.name = "tc358746-tx",
+ };
+ 
++static const struct regmap_range dummy_regmap_rw_ranges[] = {
++	regmap_reg_range(0xc4, 0xc4),
++};
++
++static const struct regmap_access_table dummy_regmap_access = {
++	.yes_ranges = dummy_regmap_rw_ranges,
++	.n_yes_ranges = ARRAY_SIZE(dummy_regmap_rw_ranges),
++};
++
++static const struct regmap_config dummy_regmap_config = {
++	.reg_bits = 32,
++	.reg_stride = 4,
++	.val_bits = 32,
++	.cache_type = REGCACHE_NONE,
++	.max_register = 0xc4,
++	.reg_format_endian = REGMAP_ENDIAN_BIG,
++	.val_format_endian = REGMAP_ENDIAN_BIG_LITTLE,
++	.rd_table = &dummy_regmap_access,
++	.name = "tc358746-tx",
++};
++
+ static const struct of_device_id dione640_of_match[] = {
+ 	{ .compatible = "xenics,dione64", },
+ 	{ },
+@@ -110,8 +131,10 @@ static const u32 ctrl_cid_list[] = {
+ };
+ 
+ struct dione640 {
+-	struct i2c_client		*i2c_client;
++	struct i2c_client		*sens_client;
++	struct i2c_client		*tc35_client;
+ 	struct v4l2_subdev		*subdev;
++	struct regmap			*ctl_regmap;
+ 	struct regmap			*tx_regmap;
+ 	struct camera_common_data	*s_data;
+ 	struct tegracam_device		*tc_dev;
+@@ -290,6 +313,7 @@ static int dione640_power_off(struct camera_common_data *s_data)
+ 
+ static int dione640_power_put(struct tegracam_device *tc_dev)
+ {
++	struct dione640 *priv = (struct dione640 *)tegracam_get_privdata(tc_dev);
+ 	struct camera_common_data *s_data = tc_dev->s_data;
+ 	struct camera_common_power_rail *pw = s_data->power;
+ 
+@@ -312,6 +336,13 @@ static int dione640_power_put(struct tegracam_device *tc_dev)
+ 	if (likely(pw->reset_gpio))
+ 		gpio_free(pw->reset_gpio);
+ 
++    printk( KERN_ALERT "**** %s %i\n", __func__, __LINE__ );
++	if (priv->tc35_client != NULL) {
++		printk( KERN_ALERT "**** %s %i\n", __func__, __LINE__ );
++		i2c_unregister_device(priv->tc35_client);
++		priv->tc35_client = NULL;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -793,8 +824,7 @@ static int tc358746_enable_csi_module(struct regmap *regmap, int lane_num)
+ static int dione640_set_mode(struct tegracam_device *tc_dev)
+ {
+ 	struct dione640 *priv = (struct dione640 *)tegracam_get_privdata(tc_dev);
+-	struct camera_common_data *s_data = priv->s_data;
+-	struct regmap *ctl_regmap = s_data->regmap;
++	struct regmap *ctl_regmap = priv->ctl_regmap;
+ 	struct regmap *tx_regmap = priv->tx_regmap;
+ 	int err;
+ 
+@@ -869,8 +899,7 @@ static int dione640_set_mode(struct tegracam_device *tc_dev)
+ static int dione640_start_streaming(struct tegracam_device *tc_dev)
+ {
+ 	struct dione640 *priv = (struct dione640 *)tegracam_get_privdata(tc_dev);
+-	struct camera_common_data *s_data = priv->s_data;
+-	struct regmap *ctl_regmap = s_data->regmap;
++	struct regmap *ctl_regmap = priv->ctl_regmap;
+ 	int err;
+ 
+ 	err = regmap_write(ctl_regmap, PP_MISC, 0);
+@@ -892,8 +921,7 @@ static int dione640_start_streaming(struct tegracam_device *tc_dev)
+ static int dione640_stop_streaming(struct tegracam_device *tc_dev)
+ {
+ 	struct dione640 *priv = (struct dione640 *)tegracam_get_privdata(tc_dev);
+-	struct camera_common_data *s_data = priv->s_data;
+-	struct regmap *ctl_regmap = s_data->regmap;
++	struct regmap *ctl_regmap = priv->ctl_regmap;
+ 	struct regmap *tx_regmap = priv->tx_regmap;
+ 	int err;
+ 
+@@ -940,7 +968,7 @@ static int dione640_board_setup(struct dione640 *priv)
+ 	struct camera_common_data *s_data = priv->s_data;
+ 	struct camera_common_pdata *pdata = s_data->pdata;
+ 	struct device *dev = s_data->dev;
+-	struct regmap *ctl_regmap = s_data->regmap;
++	struct regmap *ctl_regmap = priv->ctl_regmap;
+ 	u32 reg_val;
+ 	int err = 0;
+ 
+@@ -1003,6 +1031,7 @@ static int dione640_probe(struct i2c_client *client,
+ 	struct device *dev = &client->dev;
+ 	struct tegracam_device *tc_dev;
+ 	struct dione640 *priv;
++	struct i2c_client *tc35_client;
+ 	int err;
+ 
+ 	dev_dbg(dev, "probing v4l2 sensor at addr 0x%0x\n", client->addr);
+@@ -1018,10 +1047,17 @@ static int dione640_probe(struct i2c_client *client,
+ 	if (!tc_dev)
+ 		return -ENOMEM;
+ 
+-	priv->i2c_client = tc_dev->client = client;
++	tc35_client = i2c_new_dummy(client->adapter, TC358746_I2C_ADDR);
++    printk( KERN_ALERT "**** %s %i   tc35_client: 0x%08lx\n", __func__, __LINE__, (long )tc35_client );
++	
++	if (!tc35_client)
++		return -ENODEV;
++
++	priv->sens_client = tc_dev->client = client;
++	priv->tc35_client = tc35_client;
+ 	tc_dev->dev = dev;
+ 	strncpy(tc_dev->name, "dione64", sizeof(tc_dev->name));
+-	tc_dev->dev_regmap_config = &ctl_regmap_config;
++	tc_dev->dev_regmap_config = &dummy_regmap_config;
+ 	tc_dev->sensor_ops = &dione640_common_ops;
+ 	tc_dev->v4l2sd_internal_ops = &dione640_subdev_internal_ops;
+ 	tc_dev->tcctrl_ops = &dione640_ctrl_ops;
+@@ -1029,7 +1065,7 @@ static int dione640_probe(struct i2c_client *client,
+ 	err = tegracam_device_register(tc_dev);
+ 	if (err) {
+ 		dev_err(dev, "tegra camera driver registration failed\n");
+-		return err;
++		goto err_register;
+ 	}
+ 
+ 	priv->tc_dev = tc_dev;
+@@ -1037,15 +1073,26 @@ static int dione640_probe(struct i2c_client *client,
+ 	priv->subdev = &tc_dev->s_data->subdev;
+ 	tegracam_set_privdata(tc_dev, (void *)priv);
+ 
+-	priv->tx_regmap = devm_regmap_init_i2c(client,
+-					       &tx_regmap_config);
++	priv->tx_regmap = devm_regmap_init_i2c(tc35_client,
++										   &tx_regmap_config);
+ 	if (IS_ERR(priv->tx_regmap)) {
+ 		dev_err(dev, "tx_regmap init failed: %ld\n",
+ 			PTR_ERR(priv->tx_regmap));
+-		tegracam_device_unregister(tc_dev);
+-		return -ENODEV;
++		err = -ENODEV;
++		goto err_regmap;
++	}
++
++	priv->ctl_regmap = devm_regmap_init_i2c(tc35_client,
++											&ctl_regmap_config);
++	if (IS_ERR(priv->ctl_regmap)) {
++		dev_err(dev, "ctl_regmap init failed: %ld\n",
++			PTR_ERR(priv->ctl_regmap));
++		err = -ENODEV;
++		goto err_regmap;
+ 	}
+ 
++    printk( KERN_ALERT "**** %s %i\n", __func__, __LINE__ );
++
+ 	err = dione640_board_setup(priv);
+ 	if (err) {
+ 		tegracam_device_unregister(tc_dev);
+@@ -1056,13 +1103,26 @@ static int dione640_probe(struct i2c_client *client,
+ 	err = tegracam_v4l2subdev_register(tc_dev, true);
+ 	if (err) {
+ 		dev_err(dev, "tegra camera subdev registration failed\n");
+-		tegracam_device_unregister(tc_dev);
+-		return err;
++		goto err_regmap;
+ 	}
+ 
+ 	dev_info(dev, "detected dione640 sensor\n");
++	goto err_none;
++
++err_regmap:
++	/* about to call dione640_power_put()->
++	                 i2c_unregister_device()->
++					 regmap_exit() */
++	tegracam_device_unregister(tc_dev);
++
++err_register:
++	if (priv->tc35_client != NULL) {
++		i2c_unregister_device(priv->tc35_client);
++		priv->tc35_client = NULL;
++	}
+ 
+-	return 0;
++err_none:
++	return err;
+ }
+ 
+ static int dione640_remove(struct i2c_client *client)
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi
+index af392edbf64d..ffed8eb3d348 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione640.dtsi
+@@ -170,14 +170,14 @@
+ 					dpcm_enable = "false";
+ 					cil_settletime = "0";
+ 
+-					active_w = "1280";
+-					active_h = "1024";
++					active_w = "640";
++					active_h = "480";
+ 					pixel_t = "rgb_rgb88824";
+ 					readout_orientation = "0";
+-					line_length = "1334";
++					line_length = "694";
+ 					/* inherent_gain = "1"; */
+ 					/* mclk_multiplier = "9.33"; */
+-					pix_clk_hz = "83000000";
++					pix_clk_hz = "20000000";
+ 
+ 					/* unused */
+ 					gain_factor = "16";
+@@ -194,7 +194,7 @@
+ 					min_framerate = "40000000"; /* 40 fps */
+ 					max_framerate = "62000000"; /* 62 fps */
+ 					step_framerate = "1";
+-					default_framerate = "60756000"; /* 60.756 fps */
++					default_framerate = "60020000"; /* 60.020 fps */
+ 
+ 					/* unused */
+ 					min_exp_time = "13"; /* us */
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi
+index 24eb1042b1da..83a38c07f1d1 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi
+@@ -15,7 +15,7 @@
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ #include "tegra210-porg-camera-rbpcv2-dual-imx219.dtsi"
+-/* #include "tegra210-porg-camera-rbpcv2-dione640.dtsi" */
++#include "tegra210-porg-camera-rbpcv2-dione640.dtsi"
+ #include "tegra210-porg-camera-rbpcv2-dione1280.dtsi"
+ 
+ / {
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-plugin-manager/tegra210-porg-plugin-manager.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-plugin-manager/tegra210-porg-plugin-manager.dtsi
+index 7876dbe218fb..91be45a1580b 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/porg-plugin-manager/tegra210-porg-plugin-manager.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-plugin-manager/tegra210-porg-plugin-manager.dtsi
+@@ -170,8 +170,7 @@
+                         };
+                 };
+ 
+-#if 0
+-		fragement@9 {
++		fragment@9 {
+ 			ids = "<3448-0000-300", "<3448-0002-300" , ">=3448-0003-000";
+ 			override@0 {
+ 				target = <&max77620_ldo6>;
+@@ -186,14 +185,7 @@
+ 					non-removable;
+ 				};
+ 			};
+-			/* dione640 single sensor module */
+ 			override@2 {
+-				target = <&dione640_single_cam0>;
+-				_overlay_ {
+-					status = "okay";
+-				};
+-			};
+-			override@3 {
+ 				target = <&cam_module0>;
+ 				_overlay_ {
+ 					status = "okay";
+@@ -202,37 +194,73 @@
+ 					orientation = "1";
+ 				};
+ 			};
++
++			/* Enable VI ports */
++			override@3 {
++				target = <&vi_base>;
++				_overlay_ {
++					num-channels=<1>;
++				};
++			};
+ 			override@4 {
+-				target = <&cam_module0_drivernode0>;
++				target = <&vi_port0>;
+ 				_overlay_ {
+ 					status = "okay";
+-					pcl_id = "v4l2_sensor";
+-					devname = "dione64 6-005a";
+-					proc-device-tree = "/proc/device-tree/host1x/i2c@546c0000/rbpcv2_dione640_a@5a";
+ 				};
+ 			};
++
++			/* Enable CSI ports */
+ 			override@5 {
+-				target = <&cam_module0_drivernode1>;
++				target = <&csi_base>;
+ 				_overlay_ {
+-					status = "okay";
+-					pcl_id = "v4l2_lens";
+-					proc-device-tree = "/proc/device-tree/lens_dione640@RBPCV2/";
++					num-channels=<1>;
+ 				};
+ 			};
+-			/* Enable VI ports */
+ 			override@6 {
+-				target = <&vi_base>;
++				target = <&csi_chan0>;
+ 				_overlay_ {
+-					num-channels=<1>;
++					status = "okay";
+ 				};
+ 			};
+ 			override@7 {
+-				target = <&vi_port0>;
++				target = <&csi_chan0_port0>;
+ 				_overlay_ {
+ 					status = "okay";
+ 				};
+ 			};
+ 			override@8 {
++				target = <&csi_chan0_port1>;
++				_overlay_ {
++					status = "okay";
++				};
++			};
++
++#if 1
++			/* dione640 single sensor module */
++			override@10 {
++				target = <&dione640_single_cam0>;
++				_overlay_ {
++					status = "okay";
++				};
++			};
++			override@11 {
++				target = <&cam_module0_drivernode0>;
++				_overlay_ {
++					status = "okay";
++					pcl_id = "v4l2_sensor";
++					devname = "dione64 6-005a";
++					proc-device-tree = "/proc/device-tree/host1x/i2c@546c0000/rbpcv2_dione640_a@5a";
++				};
++			};
++			override@12 {
++				target = <&cam_module0_drivernode1>;
++				_overlay_ {
++					status = "okay";
++					pcl_id = "v4l2_lens";
++					proc-device-tree = "/proc/device-tree/lens_dione640@RBPCV2/";
++				};
++			};
++			override@13 {
+ 				target = <&rbpcv2_dione640_vi_in0>;
+ 				_overlay_ {
+ 					status = "okay";
+@@ -241,49 +269,78 @@
+ 					remote-endpoint = <&rbpcv2_dione640_csi_out0>;
+ 				};
+ 			};
+-			/* Enable CSI ports */
+-			override@9 {
+-				target = <&csi_base>;
++			override@14 {
++				target = <&rbpcv2_dione640_csi_in0>;
+ 				_overlay_ {
+-					num-channels=<1>;
++					status = "okay";
++					port-index = <0>;
++					bus-width = <2>;
++					remote-endpoint = <&rbpcv2_dione640_out0>;
++				};
++			};
++			override@15 {
++				target = <&rbpcv2_dione640_csi_out0>;
++				_overlay_ {
++					status = "okay";
++					remote-endpoint = <&rbpcv2_dione640_vi_in0>;
+ 				};
+ 			};
++
++#else
++
++			/* dione1280 single sensor module */
+ 			override@10 {
+-				target = <&csi_chan0>;
++				target = <&dione1280_single_cam0>;
+ 				_overlay_ {
+ 					status = "okay";
+ 				};
+ 			};
+ 			override@11 {
+-				target = <&csi_chan0_port0>;
++				target = <&cam_module0_drivernode0>;
+ 				_overlay_ {
+ 					status = "okay";
++					pcl_id = "v4l2_sensor";
++					devname = "dione1280 6-005b";
++					proc-device-tree = "/proc/device-tree/host1x/i2c@546c0000/rbpcv2_dione1280_a@5b";
+ 				};
+ 			};
+ 			override@12 {
+-				target = <&rbpcv2_dione640_csi_in0>;
++				target = <&cam_module0_drivernode1>;
+ 				_overlay_ {
+ 					status = "okay";
+-					port-index = <0>;
+-					bus-width = <2>;
+-					remote-endpoint = <&rbpcv2_dione640_out0>;
++					pcl_id = "v4l2_lens";
++					proc-device-tree = "/proc/device-tree/lens_dione1280@RBPCV2/";
+ 				};
+ 			};
+ 			override@13 {
+-				target = <&csi_chan0_port1>;
++				target = <&rbpcv2_dione1280_vi_in0>;
+ 				_overlay_ {
+ 					status = "okay";
++					port-index = <0>;
++					bus-width = <2>;
++					remote-endpoint = <&rbpcv2_dione1280_csi_out0>;
+ 				};
+ 			};
+ 			override@14 {
+-				target = <&rbpcv2_dione640_csi_out0>;
++				target = <&rbpcv2_dione1280_csi_in0>;
+ 				_overlay_ {
+ 					status = "okay";
+-					remote-endpoint = <&rbpcv2_dione640_vi_in0>;
++					port-index = <0>;
++					bus-width = <2>;
++					remote-endpoint = <&rbpcv2_dione1280_out0>;
+ 				};
+ 			};
+-			/* tegra-camera-platform settings */
+ 			override@15 {
++				target = <&rbpcv2_dione1280_csi_out0>;
++				_overlay_ {
++					status = "okay";
++					remote-endpoint = <&rbpcv2_dione1280_vi_in0>;
++				};
++			};
++#endif
++
++			/* tegra-camera-platform settings */
++			override@20 {
+ 				target = <&tcp>;
+ 				_overlay_ {
+ 					num_csi_lanes = <2>;
+@@ -296,14 +353,13 @@
+ 					isp_bw_margin_pct = <25>;
+ 				};
+ 			};
+-			override@16 {
++			override@21 {
+ 				target = <&cam_module1>;
+ 				_overlay_ {
+ 					status = "disabled";
+ 				};
+ 			};
+ 		};
+-#endif
+ 
+ 		fragement@10 {
+ 			ids = ">=3448-0000-300", ">=3448-0002-300";
+@@ -518,141 +574,6 @@
+ 			};
+ 		};
+ 
+-		fragement@11 {
+-			ids = "<3448-0000-300", "<3448-0002-300" , ">=3448-0003-000";
+-
+-			/* Dione1280 sensor module */
+-			override@0 {
+-				target = <&max77620_ldo6>;
+-				_overlay_ {
+-                                        status = "disabled";
+-				};
+-			};
+-			override@1 {
+-				target = <&sdhci2>;
+-				_overlay_ {
+-					keep-power-in-suspend;
+-					non-removable;
+-				};
+-			};
+-			/* dione1280 single sensor module */
+-			override@2 {
+-				target = <&dione1280_single_cam0>;
+-				_overlay_ {
+-					status = "okay";
+-				};
+-			};
+-			override@3 {
+-				target = <&cam_module0>;
+-				_overlay_ {
+-					status = "okay";
+-					badge = "porg_front_RBPCV2";
+-					position = "front";
+-					orientation = "1";
+-				};
+-			};
+-			override@4 {
+-				target = <&cam_module0_drivernode0>;
+-				_overlay_ {
+-					status = "okay";
+-					pcl_id = "v4l2_sensor";
+-					devname = "dione1280 6-005b";
+-					proc-device-tree = "/proc/device-tree/host1x/i2c@546c0000/rbpcv2_dione1280_a@5b";
+-				};
+-			};
+-			override@5 {
+-				target = <&cam_module0_drivernode1>;
+-				_overlay_ {
+-					status = "okay";
+-					pcl_id = "v4l2_lens";
+-					proc-device-tree = "/proc/device-tree/lens_dione1280@RBPCV2/";
+-				};
+-			};
+-			/* Enable VI ports */
+-			override@6 {
+-				target = <&vi_base>;
+-				_overlay_ {
+-					num-channels=<1>;
+-				};
+-			};
+-			override@7 {
+-				target = <&vi_port0>;
+-				_overlay_ {
+-					status = "okay";
+-				};
+-			};
+-			override@8 {
+-				target = <&rbpcv2_dione1280_vi_in0>;
+-				_overlay_ {
+-					status = "okay";
+-					port-index = <0>;
+-					bus-width = <2>;
+-					remote-endpoint = <&rbpcv2_dione1280_csi_out0>;
+-				};
+-			};
+-			/* Enable CSI ports */
+-			override@9 {
+-				target = <&csi_base>;
+-				_overlay_ {
+-					num-channels=<1>;
+-				};
+-			};
+-			override@10 {
+-				target = <&csi_chan0>;
+-				_overlay_ {
+-					status = "okay";
+-				};
+-			};
+-			override@11 {
+-				target = <&csi_chan0_port0>;
+-				_overlay_ {
+-					status = "okay";
+-				};
+-			};
+-			override@12 {
+-				target = <&rbpcv2_dione1280_csi_in0>;
+-				_overlay_ {
+-					status = "okay";
+-					port-index = <0>;
+-					bus-width = <2>;
+-					remote-endpoint = <&rbpcv2_dione1280_out0>;
+-				};
+-			};
+-			override@13 {
+-				target = <&csi_chan0_port1>;
+-				_overlay_ {
+-					status = "okay";
+-				};
+-			};
+-			override@14 {
+-				target = <&rbpcv2_dione1280_csi_out0>;
+-				_overlay_ {
+-					status = "okay";
+-					remote-endpoint = <&rbpcv2_dione1280_vi_in0>;
+-				};
+-			};
+-			/* tegra-camera-platform settings */
+-			override@15 {
+-				target = <&tcp>;
+-				_overlay_ {
+-					num_csi_lanes = <2>;
+-					max_lane_speed = <1500000>;
+-					min_bits_per_pixel = <10>;
+-					vi_peak_byte_per_pixel = <2>;
+-					vi_bw_margin_pct = <25>;
+-					max_pixel_rate = <240000>;
+-					isp_peak_byte_per_pixel = <5>;
+-					isp_bw_margin_pct = <25>;
+-				};
+-			};
+-			override@16 {
+-				target = <&cam_module1>;
+-				_overlay_ {
+-					status = "disabled";
+-				};
+-			};
+-		};
+-
+ 		fragment@12 {
+ 			ids = ">=3448-0003-400";
+ 			override@0 {
+diff --git a/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi b/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
+index 9d23b08dd2aa..841c38006073 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
+@@ -28,7 +28,7 @@
+ #include "porg-platforms/tegra210-pinmux-drive-sdmmc-common.dtsi"
+ #include "porg-platforms/tegra210-porg-pwm-fan.dtsi"
+ #include "porg-platforms/tegra210-porg-camera.dtsi"
+-/* #include "porg-platforms/tegra210-porg-camera-rbpcv2-dione640.dtsi" */
++#include "porg-platforms/tegra210-porg-camera-rbpcv2-dione640.dtsi"
+ #include "porg-platforms/tegra210-porg-camera-rbpcv2-dione1280.dtsi"
+ #include "porg-platforms/tegra210-porg-camera-rbpcv2-dual-imx219.dtsi"
+ #include <t210-common-platforms/tegra210-ers-hdmi-e2190-1100-a00.dtsi>
+-- 
+2.25.1
+
