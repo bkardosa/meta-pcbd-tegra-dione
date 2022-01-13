@@ -2,7 +2,13 @@
 
     Follow https://developer.ridgerun.com/wiki/index.php?title=Yocto_Support_for_NVIDIA_Jetson_Platforms_-_Setting_up_Yocto
       up to and including "$ source poky-${BRANCH}/oe-init-build-env build"
+    Summary of the steps in the above document:
+      $ export BRANCH="dunfell"
+      $ git clone -b ${BRANCH} git://git.yoctoproject.org/poky.git poky-${BRANCH}
+      $ git clone -b ${BRANCH}-l4t-r32.5.0 https://github.com/madisongh/meta-tegra.git
+      $ source poky-${BRANCH}/oe-init-build-env build
 
+    Now execute these additional steps:
       $ cd ../
       $ git clone git://git.openembedded.org/meta-openembedded -b dunfell
       $ git clone https://github.com/bkardosa/meta-pcbd-tegra-dione.git meta-pcbd-tegra

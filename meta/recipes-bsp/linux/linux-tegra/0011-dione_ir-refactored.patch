@@ -1,0 +1,631 @@
+From eec25ab63eff33a7068fcd2774a355ef241f29ec Mon Sep 17 00:00:00 2001
+From: Botond Kardos <bkardos70@gmail.com>
+Date: Wed, 12 Jan 2022 16:02:48 +0100
+Subject: [PATCH] dione_ir refactored
+
+---
+ nvidia/drivers/media/i2c/dione_ir.c           | 433 ++++++------------
+ .../tegra210-camera-rbpcv2-dione-ir.dtsi      |   2 +
+ 2 files changed, 141 insertions(+), 294 deletions(-)
+
+diff --git a/nvidia/drivers/media/i2c/dione_ir.c b/nvidia/drivers/media/i2c/dione_ir.c
+index 98e987d27eeb..75fbab9acae2 100644
+--- a/nvidia/drivers/media/i2c/dione_ir.c
++++ b/nvidia/drivers/media/i2c/dione_ir.c
+@@ -1,7 +1,7 @@
+ /*
+  * dione_ir.c - Dione IR sensor driver
+  *
+- * Copyright (c) 2015-2020, NVIDIA CORPORATION.  All rights reserved.
++ * Copyright (c) 2021-2022, PCB Design Ltd..  All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify it
+  * under the terms and conditions of the GNU General Public License,
+@@ -47,9 +47,6 @@
+ #define DIONE1280_I2C_TMO_MS           5
+ 
+ 
+-static int test_mode = 0;
+-module_param(test_mode, int, 0644);
+-
+ enum {
+ 	DIONE_IR_MODE_640x480_60FPS,
+ 	DIONE_IR_MODE_1280x1024_60FPS,
+@@ -139,6 +136,94 @@ struct dione_struct {
+ 	struct tegracam_device		*tc_dev;
+ };
+ 
++
++struct tc358746_param {
++	/* clock */
++	bool is_continuous_clk;
++	u16 pll_prd;
++	u16 pll_fbd;
++	u16 pll_frs;
++
++	/* CSI2-TX Parameters */
++	u32 lineinitcnt;
++	u32 lptxtimecnt;
++	u32 twakeupcnt;
++	u32 tclk_preparecnt;
++	u32 tclk_zerocnt;
++	u32 tclk_trailcnt;
++	u32 tclk_postcnt;
++	u32 ths_preparecnt;
++	u32 ths_zerocnt;
++	u32 ths_trailcnt;
++	u32 hstxvregcnt;
++
++	/* other */
++	int lane_num;
++	u32 fmt_width;
++	u16 vb_fifo;
++	u8 pdformat;
++	u8 pdataf;
++	u8 bpp;
++};
++
++const struct tc358746_param dione640_params = {
++	.is_continuous_clk = false,
++	.pll_prd = 3,
++	.pll_fbd = 82,
++	.pll_frs = 1,
++
++	.lineinitcnt = 4000,
++	.lptxtimecnt = 3,
++	.tclk_preparecnt = 2,
++	.tclk_zerocnt = 18,
++	.tclk_trailcnt = 1,
++	.ths_preparecnt = 3,
++	.ths_zerocnt = 0,
++	.twakeupcnt = 17000,
++	.tclk_postcnt = 0,
++	.ths_trailcnt = 1,
++	.hstxvregcnt = 5,
++
++	.lane_num = 2,
++	.fmt_width = 640,
++	.vb_fifo = 247,
++	.pdformat = 0x3,
++	.pdataf = 0,
++	.bpp = 24
++};
++
++const struct tc358746_param dione1280_params = {
++	.is_continuous_clk = true,
++	.pll_prd = 3,
++	.pll_fbd = 125,
++	.pll_frs = 0,
++
++	.lineinitcnt = 6500,
++	.lptxtimecnt = 6,
++	.tclk_preparecnt = 6,
++	.tclk_zerocnt = 35,
++	.tclk_trailcnt = 4,
++	.ths_preparecnt = 6,
++	.ths_zerocnt = 8,
++	.twakeupcnt = 25000,
++	.tclk_postcnt = 12,
++	.ths_trailcnt = 5,
++	.hstxvregcnt = 5,
++
++	.lane_num = 2,
++	.fmt_width = 1280,
++	.vb_fifo = 2,
++	.pdformat = 0x3,
++	.pdataf = 0,
++	.bpp = 24
++};
++
++/* CSI and other tc358746 settings for supported modes */
++const struct tc358746_param dioneir_mode_params[] = {
++	dione640_params,
++	dione1280_params
++};
++
+ static inline int dioneir_read_reg(struct camera_common_data *s_data,
+ 	u16 addr, u8 *val)
+ {
+@@ -495,7 +580,7 @@ static inline int tc358746_sreset(struct regmap *regmap)
+ }
+ 
+ static int tc358746_set_pll(struct regmap *regmap,
+-			    u16 pll_prd, u16 pll_fbd, u16 pll_frs)
++							const struct tc358746_param *csi_param)
+ {
+ 	u32 pllctl0, pllctl1, pllctl0_new;
+ 	int err;
+@@ -507,8 +592,8 @@ static int tc358746_set_pll(struct regmap *regmap,
+ 	if (err)
+ 		return err;
+ 
+-	pllctl0_new = PLLCTL0_PLL_PRD_SET(pll_prd) |
+-		PLLCTL0_PLL_FBD_SET(pll_fbd);
++	pllctl0_new = PLLCTL0_PLL_PRD_SET(csi_param->pll_prd) |
++	  PLLCTL0_PLL_FBD_SET(csi_param->pll_fbd);
+ 
+ 	/*
+ 	 * Only rewrite when needed (new value or disabled), since rewriting
+@@ -518,7 +603,7 @@ static int tc358746_set_pll(struct regmap *regmap,
+ 	if (pllctl0 != pllctl0_new || (pllctl1 & PLLCTL1_PLL_EN_MASK) == 0) {
+ 		u16 pllctl1_mask = PLLCTL1_PLL_FRS_MASK | PLLCTL1_RESETB_MASK |
+ 				   PLLCTL1_PLL_EN_MASK;
+-		u16 pllctl1_val = PLLCTL1_PLL_FRS_SET(pll_frs) |
++		u16 pllctl1_val = PLLCTL1_PLL_FRS_SET(csi_param->pll_frs) |
+ 				  PLLCTL1_RESETB_MASK | PLLCTL1_PLL_EN_MASK;
+ 
+ 		err = regmap_write(regmap, PLLCTL0, pllctl0_new);
+@@ -537,28 +622,28 @@ static int tc358746_set_pll(struct regmap *regmap,
+ }
+ 
+ static int tc358746_set_csi_color_space(struct regmap *regmap,
+-		u8 pdformat, u8 pdataf)
++										const struct tc358746_param *csi_param)
+ {
+ 	int err;
+ 
+ 	err = regmap_update_bits(regmap, DATAFMT,
+ 				 (DATAFMT_PDFMT_MASK | DATAFMT_UDT_EN_MASK),
+-				 DATAFMT_PDFMT_SET(pdformat));
++				 DATAFMT_PDFMT_SET(csi_param->pdformat));
+ 
+ 	if (!err)
+ 		err = regmap_update_bits(regmap, CONFCTL, CONFCTL_PDATAF_MASK,
+-					 CONFCTL_PDATAF_SET(pdataf));
++					 CONFCTL_PDATAF_SET(csi_param->pdataf));
+ 
+ 	return err;
+ }
+ 
+ static int tc358746_set_buffers(struct regmap *regmap,
+-		u32 fmt_width, u8 bpp, u16 vb_fifo)
++								const struct tc358746_param *csi_param)
+ {
+-	unsigned int byte_per_line = (fmt_width * bpp) / 8;
++	unsigned int byte_per_line = (csi_param->fmt_width * csi_param->bpp) / 8;
+ 	int err;
+ 
+-	err = regmap_write(regmap, FIFOCTL, vb_fifo);
++	err = regmap_write(regmap, FIFOCTL, csi_param->vb_fifo);
+ 
+ 	if (!err)
+ 		err = regmap_write(regmap, WORDCNT, byte_per_line);
+@@ -619,73 +704,8 @@ static int tc358746_enable_csi_lanes(struct regmap *regmap,
+ 	return err;
+ }
+ 
+-struct tc358746_csi_param {
+-	bool is_continuous_clk;
+-
+-	/* CSI2-TX Parameters */
+-	u32 lineinitcnt;
+-	u32 lptxtimecnt;
+-	u32 twakeupcnt;
+-	u32 tclk_preparecnt;
+-	u32 tclk_zerocnt;
+-	u32 tclk_trailcnt;
+-	u32 tclk_postcnt;
+-	u32 ths_preparecnt;
+-	u32 ths_zerocnt;
+-	u32 ths_trailcnt;
+-
+-	u32 hstxvregcnt;
+-};
+-
+-static void tc358746_csi_param_set_default(
+-		struct tc358746_csi_param *param,
+-		bool discontinuous_clk, u32 fmt_width)
+-{
+-	param->is_continuous_clk = !discontinuous_clk;
+-
+-	switch (fmt_width) {
+-		case 640:
+-			param->lineinitcnt = 4000;
+-			param->lptxtimecnt = 3;
+-
+-			param->tclk_preparecnt = 2;
+-			param->tclk_zerocnt = 18;
+-
+-			/* default, skipped but value in excell = 0 */
+-			param->tclk_trailcnt = 1;
+-
+-			param->ths_preparecnt = 3;
+-			param->ths_zerocnt = 0;
+-
+-			param->twakeupcnt = 17000;
+-
+-			/* default, skipped but value in excell = 4 */
+-			param->tclk_postcnt = 0;
+-
+-			param->ths_trailcnt = 1;
+-
+-			/* only presents in the excell, default: 32 */
+-			param->hstxvregcnt = 5;
+-			break;
+-
+-		case 1280:
+-			param->lineinitcnt = 6500;
+-			param->lptxtimecnt = 6;
+-			param->tclk_preparecnt = 6;
+-			param->tclk_zerocnt = 35;
+-			param->tclk_trailcnt = 4;
+-			param->ths_preparecnt = 6;
+-			param->ths_zerocnt = 8;
+-			param->twakeupcnt = 25000;
+-			param->tclk_postcnt = 12;
+-			param->ths_trailcnt = 5;
+-			param->hstxvregcnt = 5;
+-			break;
+-	} /* switch(fmt_width) */
+-}
+-
+ static int tc358746_set_csi(struct regmap *regmap,
+-		struct tc358746_csi_param *param)
++							const struct tc358746_param *param)
+ {
+ 	u32 val;
+ 	int err;
+@@ -727,83 +747,6 @@ static int tc358746_set_csi(struct regmap *regmap,
+ 	return err;
+ }
+ 
+-static int tc38764_debug_pattern_80(struct regmap *regmap)
+-{
+-	int i, err;
+-
+-	err = regmap_write(regmap, DBG_ACT_LINE_CNT, 0x8000);
+-	if (!err)
+-		err = regmap_write(regmap, DBG_LINE_WIDTH, 0x0821);
+-	if (!err)
+-		err = regmap_write(regmap, DBG_VERT_BLANK_LINE_CNT, 0);
+-
+-	/* White 80pixel */
+-	for (i = 0; i < 120 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0xffff);
+-	}
+-
+-	/* Yellow 80pixel, BGR: 00 FF FF */
+-	for (i = 0; i < 40 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0xff00);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0x00ff);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0xffff);
+-	}
+-
+-	/* Cyan 80pixel, BGR: FF FF 00 */
+-	for (i = 0; i < 40 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0xffff);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0xff00);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0x00ff);
+-	}
+-
+-	/* Green 80pixel, BGR: 00 FF 00 */
+-	for (i = 0; i < 40 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0xff00);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0x0000);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0x00ff);
+-	}
+-
+-	/* Magenda 80pixel, BGR: FF 00 FF */
+-	for (i = 0; i < 40 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0x00ff);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0xffff);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0xff00);
+-	}
+-
+-	/* Red 80pixel, BGR: 00 00 FF */
+-	for (i = 0; i < 40 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0x0000);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0x00ff);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0xff00);
+-	}
+-
+-	/* Blue 80pixel, BGR: FF 00 00 */
+-	for (i = 0; i < 40 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0x00ff);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0xff00);
+-		if (!err)
+-			err = regmap_write(regmap, DBG_VIDEO_DATA, 0x0000);
+-	}
+-
+-	/* Black 80pixel */
+-	for (i = 0; i < 120 && !err; i++) {
+-		err = regmap_write(regmap, DBG_VIDEO_DATA, 0x0000);
+-	}
+-
+-	return err;
+-}
+-
+ static int tc358746_wr_csi_control(struct regmap *regmap, u32 val)
+ {
+ 	u32 _val;
+@@ -842,50 +785,16 @@ static int tc358746_enable_csi_module(struct regmap *regmap, int lane_num)
+ 	return err;
+ }
+ 
+-static int dione640_set_mode(struct tegracam_device *tc_dev)
++static int dioneir_set_mode_common(struct tegracam_device *tc_dev)
+ {
+ 	struct dione_struct *priv = (struct dione_struct *)tegracam_get_privdata(tc_dev);
+ 	struct camera_common_data *s_data = priv->s_data;
+ 	struct regmap *ctl_regmap = s_data->regmap;
+ 	struct regmap *tx_regmap = priv->tx_regmap;
++	const struct tc358746_param *csi_setting;
+ 	int err;
+ 
+-	/* Parameters:
+-	 *
+-	 * 1. pll setup:
+-	 * - pll_prd: Pre Divider value // calc
+-	 * - pll_fbd: Multiply value of Unit Clock // calc
+-	 * - pll_frs: CSI speed/lane // calc
+-	 *
+-	 * 2. setup format: RGB888
+-	 * - pdformat: 0x3 // dt
+-	 * - pdataformat: 0x0 // dt
+-	 *
+-	 * 3. setup buffers:
+-	 * - fmt_width = 640 // dt
+-	 * - bpp = 24 (bits per pixel) // dt
+-	 * - vb_fifo = 247 (fifo size) // calc
+-	 *
+-	 * 4. setup csi lanes
+-	 * - lane_num = 2 // dt
+-	 * - struct tc358746_csi_param // calc
+-	 * - discontinuous_clk = true // dt
+-	 *
+-	 * 5. test_mode
+-	 */
+-	u16 pll_prd = 3, pll_fbd = 82, pll_frs = 1;
+-	u8 pdformat = 0x3, pdataf = 0x0;
+-	u32 fmt_width = 640; u8 bpp = 24; u16 vb_fifo = 247;
+-	int lane_num = 2;
+-	struct tc358746_csi_param csi_setting;
+-	bool discontinuous_clk = true;
+-
+-	printk( KERN_ALERT "**** %s %i   mode: %i   sensor_mode_id: %i\n",
+-			__func__, __LINE__, s_data->mode, s_data->sensor_mode_id);
+-	if (s_data->mode != 0)
+-		return -EINVAL;
+-
+-	tc358746_csi_param_set_default(&csi_setting, discontinuous_clk, fmt_width);
++	csi_setting = &dioneir_mode_params[s_data->mode];
+ 
+ 	regmap_write(ctl_regmap, DBG_ACT_LINE_CNT, 0);
+ 
+@@ -895,115 +804,58 @@ static int dione640_set_mode(struct tegracam_device *tc_dev)
+ 		return err;
+ 	}
+ 
+-	err = tc358746_set_pll(ctl_regmap, pll_prd, pll_fbd, pll_frs);
++ 	err = tc358746_set_pll(ctl_regmap, csi_setting);
+ 	if (err) {
+ 		dev_err(tc_dev->dev, "Failed to setup PLL\n");
+ 		return err;
+ 	}
+ 
+-	err = tc358746_set_csi_color_space(ctl_regmap, pdformat, pdataf);
++	err = tc358746_set_csi_color_space(ctl_regmap, csi_setting);
+ 
+ 	if (!err)
+-		err = tc358746_set_buffers(ctl_regmap, fmt_width, bpp, vb_fifo);
++		err = tc358746_set_buffers(ctl_regmap, csi_setting);
+ 
+ 	if (!err)
+-		err = tc358746_enable_csi_lanes(tx_regmap, lane_num, true);
++		err = tc358746_enable_csi_lanes(tx_regmap, csi_setting->lane_num, true);
+ 
+ 	if (!err)
+-		err = tc358746_set_csi(tx_regmap, &csi_setting);
+-
+-	if (!err && test_mode)
+-		err = tc38764_debug_pattern_80(ctl_regmap);
++		err = tc358746_set_csi(tx_regmap, csi_setting);
+ 
+ 	if (!err)
+-		err = tc358746_enable_csi_module(tx_regmap, lane_num);
++		err = tc358746_enable_csi_module(tx_regmap, csi_setting->lane_num);
+ 
+ 	if (err)
+ 		dev_err(tc_dev->dev, "%s return code (%d)\n", __func__, err);
+ 	return err;
+ }
+ 
+-static int dione1280_set_mode(struct tegracam_device *tc_dev)
++static int dione640_set_mode(struct tegracam_device *tc_dev)
+ {
+ 	struct dione_struct *priv = (struct dione_struct *)tegracam_get_privdata(tc_dev);
+ 	struct camera_common_data *s_data = priv->s_data;
+-	struct regmap *ctl_regmap = s_data->regmap;
+-	struct regmap *tx_regmap = priv->tx_regmap;
+-	int err;
+-
+-	/* Parameters:
+-	 *
+-	 * 1. pll setup:
+-	 * - pll_prd: Pre Divider value // calc
+-	 * - pll_fbd: Multiply value of Unit Clock // calc
+-	 * - pll_frs: CSI speed/lane // calc
+-	 *
+-	 * 2. setup format: RGB888
+-	 * - pdformat: 0x3 // dt
+-	 * - pdataformat: 0x0 // dt
+-	 *
+-	 * 3. setup buffers:
+-	 * - fmt_width = 640 // dt
+-	 * - bpp = 24 (bits per pixel) // dt
+-	 * - vb_fifo = 247 (fifo size) // calc
+-	 *
+-	 * 4. setup csi lanes
+-	 * - lane_num = 2 // dt
+-	 * - struct tc358746_csi_param // calc
+-	 * - discontinuous_clk = true // dt
+-	 *
+-	 * 5. test_mode
+-	 */
+-	u16 pll_prd = 3, pll_fbd = 125, pll_frs = 0;
+-	u8 pdformat = 0x3, pdataf = 0x0;
+-	u32 fmt_width = 1280; u8 bpp = 24; u16 vb_fifo = 2;
+-	int lane_num = 2;
+-	struct tc358746_csi_param csi_setting;
+-	bool discontinuous_clk = false;
+ 
+ 	printk( KERN_ALERT "**** %s %i   mode: %i   sensor_mode_id: %i\n",
+ 			__func__, __LINE__, s_data->mode, s_data->sensor_mode_id);
+-	if (s_data->mode != 1)
++	if (s_data->mode != DIONE_IR_MODE_640x480_60FPS)
+ 		return -EINVAL;
+ 
+-	tc358746_csi_param_set_default(&csi_setting, discontinuous_clk, fmt_width);
+-
+-	regmap_write(ctl_regmap, DBG_ACT_LINE_CNT, 0);
+-
+-	err = tc358746_sreset(ctl_regmap);
+-	if (err) {
+-		dev_err(tc_dev->dev, "Failed to reset chip\n");
+-		return err;
+-	}
+-
+-	err = tc358746_set_pll(ctl_regmap, pll_prd, pll_fbd, pll_frs);
+-	if (err) {
+-		dev_err(tc_dev->dev, "Failed to setup PLL\n");
+-		return err;
+-	}
+-
+-	err = tc358746_set_csi_color_space(ctl_regmap, pdformat, pdataf);
+-
+-	if (!err)
+-		err = tc358746_set_buffers(ctl_regmap, fmt_width, bpp, vb_fifo);
+-
+-	if (!err)
+-		err = tc358746_enable_csi_lanes(tx_regmap, lane_num, true);
+-
+-	if (!err)
+-		err = tc358746_set_csi(tx_regmap, &csi_setting);
++	return dioneir_set_mode_common(tc_dev);
++}
+ 
+-	if (!err && test_mode)
+-		err = tc38764_debug_pattern_80(ctl_regmap);
++static int dione1280_set_mode(struct tegracam_device *tc_dev)
++{
++	struct dione_struct *priv = (struct dione_struct *)tegracam_get_privdata(tc_dev);
++	struct camera_common_data *s_data = priv->s_data;
+ 
+-	if (!err)
+-		err = tc358746_enable_csi_module(tx_regmap, lane_num);
++	printk( KERN_ALERT "**** %s %i   mode: %i   sensor_mode_id: %i\n",
++			__func__, __LINE__, s_data->mode, s_data->sensor_mode_id);
++	if (s_data->mode != DIONE_IR_MODE_1280x1024_60FPS)
++		return -EINVAL;
+ 
+-	if (err)
+-		dev_err(tc_dev->dev, "%s return code (%d)\n", __func__, err);
+-	return err;
++	return dioneir_set_mode_common(tc_dev);
+ }
+ 
++
+ static int dioneir_start_streaming(struct tegracam_device *tc_dev)
+ {
+ 	struct dione_struct *priv = (struct dione_struct *)tegracam_get_privdata(tc_dev);
+@@ -1013,15 +865,10 @@ static int dioneir_start_streaming(struct tegracam_device *tc_dev)
+ 
+ 	printk( KERN_ALERT "**** %s %i\n", __func__, __LINE__);
+ 	err = regmap_write(ctl_regmap, PP_MISC, 0);
+-	if (test_mode) {
+-		if (!err)
+-			err = regmap_write(ctl_regmap, DBG_ACT_LINE_CNT, 0xc1df);
+-	} else {
+-		if (!err)
+-			err = regmap_update_bits(ctl_regmap, CONFCTL,
+-						 CONFCTL_PPEN_MASK,
+-						 CONFCTL_PPEN_MASK);
+-	}
++	if (!err)
++		err = regmap_update_bits(ctl_regmap, CONFCTL,
++								 CONFCTL_PPEN_MASK,
++								 CONFCTL_PPEN_MASK);
+ 
+ 	if (err)
+ 		dev_err(tc_dev->dev, "%s return code (%d)\n", __func__, err);
+@@ -1263,7 +1110,7 @@ static int detect_dione1280(struct dione_struct *priv)
+ 	int cnt;
+ 	int ret = 0;
+ 
+-	msleep(200);
++	msleep(500);
+ 
+ 	priv->fpga_client = i2c_new_dummy(priv->tc35_client->adapter, DIONE1280_I2C_ADDR);
+     printk( KERN_ALERT "**** %s %i   fpga_client: 0x%08lx\n", __func__, __LINE__, (long )priv->fpga_client );
+@@ -1322,7 +1169,17 @@ static int dioneir_board_setup(struct dione_struct *priv)
+ 		goto err_power_on;
+ 	}
+ 
+-	msleep(500);
++	if (s_data->ops == &dione640_common_ops)
++		err = detect_dione640(priv);
++
++	if (s_data->ops == &dione1280_common_ops)
++		err = detect_dione1280(priv);
++
++	printk( KERN_ALERT "**** %s %i   err: %i\n", __func__, __LINE__, err);
++	if (err) {
++		dev_err(dev, "%s: error, no sensor found\n", __func__);
++		goto err_reg_probe;
++	}
+ 
+ 	/* Probe sensor model id registers */
+ 	err = regmap_read(ctl_regmap, CHIPID, &reg_val);
+@@ -1339,18 +1196,6 @@ static int dioneir_board_setup(struct dione_struct *priv)
+ 		goto err_reg_probe;
+ 	}
+ 
+-	if (s_data->ops == &dione640_common_ops)
+-		err = detect_dione640(priv);
+-
+-	if (s_data->ops == &dione1280_common_ops)
+-		err = detect_dione1280(priv);
+-
+-	printk( KERN_ALERT "**** %s %i   err: %i\n", __func__, __LINE__, err);
+-	if (err) {
+-		dev_err(dev, "%s: error, no sensor found\n", __func__);
+-		goto err_reg_probe;
+-	}
+-
+ err_reg_probe:
+ 	dioneir_power_off(s_data);
+ 
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione-ir.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione-ir.dtsi
+index 445635538653..6644d1ae0e9b 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione-ir.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-camera-rbpcv2-dione-ir.dtsi
+@@ -161,6 +161,7 @@
+ 				* Sensor embedded metadata height in units of rows.
+ 				* If sensor does not support embedded metadata value should be 0.
+ 				*/
++#if 0
+ 				mode0 { /* DIONE_IR_MODE_640x480_60FPS */
+ 					mclk_khz = "24000";
+ 					num_lanes = "2";
+@@ -248,6 +249,7 @@
+ 
+ 					embedded_metadata_height = "0";
+ 				};
++#endif
+ 
+ 				ports {
+ 					#address-cells = <1>;
+-- 
+2.25.1
+

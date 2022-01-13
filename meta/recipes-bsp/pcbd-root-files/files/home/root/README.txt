@@ -4,15 +4,26 @@
     GStreamer live stream:
       # gst-launch-1.0 v4l2src device=/dev/video0 ! video/x-raw,format=BGRA,width=1280,height=1024 ! videoconvert ! video/x-raw,format=NV12 ! nvvidconv ! nvoverlaysink sync=false
 
-    Capture one raw fram:
+    Capture one raw frame:
       # v4l2-ctl --set-fmt-video=width=1280,height=1024 --set-ctrl bypass_mode=0 --stream-mmap --stream-count=1 --stream-to=frame_001.raw
 
-    Read device DeviceFirmwareVersion:
-      # i2ctransfer -y -f 6 w6@0x5a 0x00 0xe0 0x00 0x20 0x40 0x00
-      # i2ctransfer -y -f 6 r64@0x5a
+    dione_ir module options:
+      - quick_mode
+          0 keeps the camera in reset state when streaming isn't active
+          1 prevents the module from resetting the camera when streaming has finished
+          default value is 1
+      - test_mode
+          enables, or disables test pattern generation by the camera
+          default value is 0
+
+    Changing module options after startup:
+      # rmmod dione_ir
+      # modprobe dione_ir test_mode=1
 
 
-    Python code to change test pattern:
+
+    Python code to change test pattern.
+    The following commands work only with quick_mode=1 and test_mode=0
     - in one terminal window execute:
       # gst-launch-1.0 v4l2src device=/dev/video0 ! video/x-raw,format=BGRA,width=1280,height=1024 ! videoconvert ! video/x-raw,format=NV12 ! nvvidconv ! nvoverlaysink sync=false
     - image stream shall appear on Weston desktop
@@ -20,7 +31,7 @@
     - in another terminal window:
       # python3
       >>> import dione1280
-      >>> di=dione1280.dione1280()
+      >>> di=dione1280.dione1280(dev_addr=0x5b)
       >>> di.ack_stop()
     - retry the last one if there was an I/O error
       >>> hex(di.write_reg32(0x00080108, 0))
