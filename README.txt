@@ -11,7 +11,7 @@
     Now execute these additional steps:
       $ cd ../
       $ git clone git://git.openembedded.org/meta-openembedded -b dunfell
-      $ git clone https://github.com/bkardosa/meta-pcbd-tegra-dione.git meta-pcbd-tegra
+      $ git clone https://redmine.pcbdesign.hu/git/sw236 -b dev-dione_ir-common meta-pcbd-tegra
       $ cp meta-pcbd-tegra/local.conf.sample build/conf/local.conf
       $ cd build/
       $ bitbake-layers add-layer ../meta-tegra/
