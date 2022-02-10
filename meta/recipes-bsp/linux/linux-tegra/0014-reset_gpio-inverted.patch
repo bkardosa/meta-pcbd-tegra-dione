@@ -1,0 +1,230 @@
+From d9df1de9a4148d7bff0bd533ebd3f2fd3d2d6ddc Mon Sep 17 00:00:00 2001
+From: Botond Kardos <bkardos70@gmail.com>
+Date: Thu, 10 Feb 2022 13:07:55 +0100
+Subject: [PATCH] dione_ir: reset_gpio inverted, unneeded files removed
+
+---
+ nvidia/drivers/media/i2c/dione_ir.c           | 12 ++--
+ .../platform/t210/batuu/kernel-dts/Makefile   |  2 -
+ .../kernel-dts/camera-overlay-dione1280.dts   | 60 -------------------
+ .../kernel-dts/camera-overlay-dione640.dts    | 59 ------------------
+ .../porg-platforms/tegra210-porg-camera.dtsi  |  3 +-
+ .../tegra210-porg-p3448-common.dtsi           |  2 -
+ 6 files changed, 7 insertions(+), 131 deletions(-)
+ delete mode 100644 nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione1280.dts
+ delete mode 100644 nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione640.dts
+
+diff --git a/nvidia/drivers/media/i2c/dione_ir.c b/nvidia/drivers/media/i2c/dione_ir.c
+index 372ffdad1cac..439d8eac62b0 100644
+--- a/nvidia/drivers/media/i2c/dione_ir.c
++++ b/nvidia/drivers/media/i2c/dione_ir.c
+@@ -313,9 +313,9 @@ static int dioneir_power_on(struct camera_common_data *s_data)
+ 
+ 	if (pw->reset_gpio) {
+ 		if (gpio_cansleep(pw->reset_gpio))
+-			gpio_set_value_cansleep(pw->reset_gpio, 0);
++			gpio_set_value_cansleep(pw->reset_gpio, 1);
+ 		else
+-			gpio_set_value(pw->reset_gpio, 0);
++			gpio_set_value(pw->reset_gpio, 1);
+ 	}
+ 
+ 	if (unlikely(!(pw->avdd || pw->iovdd || pw->dvdd)))
+@@ -346,9 +346,9 @@ static int dioneir_power_on(struct camera_common_data *s_data)
+ skip_power_seqn:
+ 	if (pw->reset_gpio) {
+ 		if (gpio_cansleep(pw->reset_gpio))
+-			gpio_set_value_cansleep(pw->reset_gpio, 1);
++			gpio_set_value_cansleep(pw->reset_gpio, 0);
+ 		else
+-			gpio_set_value(pw->reset_gpio, 1);
++			gpio_set_value(pw->reset_gpio, 0);
+ 	}
+ 
+ 	usleep_range(23000, 23100);
+@@ -392,9 +392,9 @@ static int dioneir_power_off(struct camera_common_data *s_data)
+ 	} else {
+ 		if (pw->reset_gpio) {
+ 			if (gpio_cansleep(pw->reset_gpio))
+-				gpio_set_value_cansleep(pw->reset_gpio, 0);
++				gpio_set_value_cansleep(pw->reset_gpio, 1);
+ 			else
+-				gpio_set_value(pw->reset_gpio, 0);
++				gpio_set_value(pw->reset_gpio, 1);
+ 		}
+ 
+ 		usleep_range(10, 10);
+diff --git a/nvidia/platform/t210/batuu/kernel-dts/Makefile b/nvidia/platform/t210/batuu/kernel-dts/Makefile
+index 66fb36e33448..54d2fbd3f232 100644
+--- a/nvidia/platform/t210/batuu/kernel-dts/Makefile
++++ b/nvidia/platform/t210/batuu/kernel-dts/Makefile
+@@ -5,8 +5,6 @@ dtbo-y :=
+ makefile-path := platform/t210/batuu/kernel-dts
+ 
+ dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0003-p3542-0000.dtb
+-dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += camera-overlay-dione1280.dtb
+-dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += camera-overlay-dione640.dtb
+ dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0003-p3542-0000-hdmi-dsi.dtb
+ dtbo-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0003-p3542-0000-adafruit-sph0645lm4h.dtbo
+ dtbo-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0003-p3542-0000-fe-pi-audio.dtbo
+diff --git a/nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione1280.dts b/nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione1280.dts
+deleted file mode 100644
+index 1f939089615b..000000000000
+--- a/nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione1280.dts
++++ /dev/null
+@@ -1,60 +0,0 @@
+-
+-/dts-v1/;
+-/plugin/;
+-
+-/ {
+-	/* dione1280 single sensor module */
+-	fragment@0  {
+-		target = <&dione1280_single_cam0>;
+-		__overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@1 {
+-		target = <&cam_module0_drivernode0>;
+-		__overlay__ {
+-			status = "okay";
+-			pcl_id = "v4l2_sensor";
+-			devname = "dione1280 6-005b";
+-			proc-device-tree = "/proc/device-tree/host1x/i2c@546c0000/rbpcv2_dione1280_a@5b";
+-		};
+-	};
+-	fragment@2 {
+-		target = <&cam_module0_drivernode1>;
+-		__overlay__ {
+-			status = "okay";
+-			pcl_id = "v4l2_lens";
+-			proc-device-tree = "/proc/device-tree/lens_dione1280@RBPCV2/";
+-		};
+-	};
+-	fragment@3 {
+-		target = <&rbpcv2_dione1280_vi_in0>;
+-		__overlay__ {
+-			status = "okay";
+-			port-index = <0>;
+-			bus-width = <2>;
+-			remote-endpoint = <&rbpcv2_dione1280_csi_out0>;
+-		};
+-	};
+-	fragment@4 {
+-		target = <&rbpcv2_dione1280_csi_in0>;
+-		__overlay__ {
+-			status = "okay";
+-			port-index = <0>;
+-			bus-width = <2>;
+-			remote-endpoint = <&rbpcv2_dione1280_out0>;
+-		};
+-	};
+-	fragment@5 {
+-		target = <&rbpcv2_dione1280_csi_out0>;
+-		__overlay__ {
+-			status = "okay";
+-			remote-endpoint = <&rbpcv2_dione1280_vi_in0>;
+-		};
+-	};
+-
+-	chosen {
+-		/* ugly hack to make tegraflash build */
+-	};
+-};
+diff --git a/nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione640.dts b/nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione640.dts
+deleted file mode 100644
+index f2a38644943d..000000000000
+--- a/nvidia/platform/t210/batuu/kernel-dts/camera-overlay-dione640.dts
++++ /dev/null
+@@ -1,59 +0,0 @@
+-
+-/dts-v1/;
+-/plugin/;
+-
+-/ {
+-	/* dione640 single sensor module */
+-	fragment@0 {
+-		target = <&dione640_single_cam0>;
+-		__overlay__ {
+-			status = "okay";
+-		};
+-	};
+-	fragment@1 {
+-		target = <&cam_module0_drivernode0>;
+-		__overlay__ {
+-			status = "okay";
+-			pcl_id = "v4l2_sensor";
+-			devname = "dione64 6-005a";
+-			proc-device-tree = "/proc/device-tree/host1x/i2c@546c0000/rbpcv2_dione640_a@5a";
+-		};
+-	};
+-	fragment@2 {
+-		target = <&cam_module0_drivernode1>;
+-		__overlay__ {
+-			status = "okay";
+-			pcl_id = "v4l2_lens";
+-			proc-device-tree = "/proc/device-tree/lens_dione640@RBPCV2/";
+-		};
+-	};
+-	fragment@3 {
+-		target = <&rbpcv2_dione640_vi_in0>;
+-		__overlay__ {
+-			status = "okay";
+-			port-index = <0>;
+-			bus-width = <2>;
+-			remote-endpoint = <&rbpcv2_dione640_csi_out0>;
+-		};
+-	};
+-	fragment@4 {
+-		target = <&rbpcv2_dione640_csi_in0>;
+-		__overlay__ {
+-			status = "okay";
+-			port-index = <0>;
+-			bus-width = <2>;
+-			remote-endpoint = <&rbpcv2_dione640_out0>;
+-		};
+-	};
+-	fragment@5 {
+-		target = <&rbpcv2_dione640_csi_out0>;
+-		__overlay__ {
+-			status = "okay";
+-			remote-endpoint = <&rbpcv2_dione640_vi_in0>;
+-		};
+-	};
+-
+-	chosen {
+-		/* ugly hack to make tegraflash build */
+-	};
+-};
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi
+index 83a38c07f1d1..0f6a0ba271fb 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms/tegra210-porg-camera.dtsi
+@@ -15,8 +15,7 @@
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ #include "tegra210-porg-camera-rbpcv2-dual-imx219.dtsi"
+-#include "tegra210-porg-camera-rbpcv2-dione640.dtsi"
+-#include "tegra210-porg-camera-rbpcv2-dione1280.dtsi"
++#include "tegra210-porg-camera-rbpcv2-dione-ir.dtsi"
+ 
+ / {
+ 	tegra-camera-platform {
+diff --git a/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi b/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
+index b0eafec495df..8917c3021818 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
+@@ -28,8 +28,6 @@
+ #include "porg-platforms/tegra210-pinmux-drive-sdmmc-common.dtsi"
+ #include "porg-platforms/tegra210-porg-pwm-fan.dtsi"
+ #include "porg-platforms/tegra210-porg-camera.dtsi"
+-#include "porg-platforms/tegra210-porg-camera-rbpcv2-dione640.dtsi"
+-#include "porg-platforms/tegra210-porg-camera-rbpcv2-dione1280.dtsi"
+ #include "porg-platforms/tegra210-porg-camera-rbpcv2-dione-ir.dtsi"
+ #include "porg-platforms/tegra210-porg-camera-rbpcv2-dual-imx219.dtsi"
+ #include <t210-common-platforms/tegra210-ers-hdmi-e2190-1100-a00.dtsi>
+-- 
+2.25.1
+
