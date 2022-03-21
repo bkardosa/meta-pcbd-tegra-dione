@@ -1,0 +1,213 @@
+From 72563592e33682bccff2a2eb6cb67ac50ae85bd4 Mon Sep 17 00:00:00 2001
+From: Botond Kardos <bkardos70@gmail.com>
+Date: Mon, 21 Mar 2022 15:57:17 +0100
+Subject: [PATCH] support for REV-A MIPI interface board added
+
+If everything else fails driver tries to detect dione640 module
+with inverted reset-gpio
+---
+ nvidia/drivers/media/i2c/dione_ir.c | 141 +++++++++++++++++++++++++++-
+ 1 file changed, 137 insertions(+), 4 deletions(-)
+
+diff --git a/nvidia/drivers/media/i2c/dione_ir.c b/nvidia/drivers/media/i2c/dione_ir.c
+index 439d8eac62b0..f9929714dc6b 100644
+--- a/nvidia/drivers/media/i2c/dione_ir.c
++++ b/nvidia/drivers/media/i2c/dione_ir.c
+@@ -352,6 +352,7 @@ static int dioneir_power_on(struct camera_common_data *s_data)
+ 	}
+ 
+ 	usleep_range(23000, 23100);
++	msleep(200);
+ 
+ 	pw->state = SWITCH_ON;
+ 
+@@ -412,6 +413,120 @@ static int dioneir_power_off(struct camera_common_data *s_data)
+ 	return 0;
+ }
+ 
++static int dioneir_power_on_reva(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, "%s: power on\n", __func__);
++	if (pdata && pdata->power_on) {
++		err = pdata->power_on(pw);
++		if (err)
++			dev_err(dev, "%s failed.\n", __func__);
++		else
++			pw->state = SWITCH_ON;
++		return err;
++	}
++
++	if (pw->reset_gpio) {
++		if (gpio_cansleep(pw->reset_gpio))
++			gpio_set_value_cansleep(pw->reset_gpio, 0);
++		else
++			gpio_set_value(pw->reset_gpio, 0);
++	}
++
++	if (unlikely(!(pw->avdd || pw->iovdd || pw->dvdd)))
++		goto skip_power_seqn;
++
++	usleep_range(10, 20);
++
++	if (pw->avdd) {
++		err = regulator_enable(pw->avdd);
++		if (err)
++			goto dioneir_avdd_fail;
++	}
++
++	if (pw->iovdd) {
++		err = regulator_enable(pw->iovdd);
++		if (err)
++			goto dioneir_iovdd_fail;
++	}
++
++	if (pw->dvdd) {
++		err = regulator_enable(pw->dvdd);
++		if (err)
++			goto dioneir_dvdd_fail;
++	}
++
++	usleep_range(10, 20);
++
++skip_power_seqn:
++	if (pw->reset_gpio) {
++		if (gpio_cansleep(pw->reset_gpio))
++			gpio_set_value_cansleep(pw->reset_gpio, 1);
++		else
++			gpio_set_value(pw->reset_gpio, 1);
++	}
++
++	usleep_range(23000, 23100);
++	msleep(200);
++
++	pw->state = SWITCH_ON;
++
++	return 0;
++
++dioneir_dvdd_fail:
++	regulator_disable(pw->iovdd);
++
++dioneir_iovdd_fail:
++	regulator_disable(pw->avdd);
++
++dioneir_avdd_fail:
++	dev_err(dev, "%s failed.\n", __func__);
++
++	return -ENODEV;
++}
++
++static int dioneir_power_off_reva(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, "%s: power off\n", __func__);
++
++	if (pdata && pdata->power_off) {
++		err = pdata->power_off(pw);
++		if (err) {
++			dev_err(dev, "%s failed.\n", __func__);
++			return err;
++		}
++	} else {
++		if (pw->reset_gpio) {
++			if (gpio_cansleep(pw->reset_gpio))
++				gpio_set_value_cansleep(pw->reset_gpio, 0);
++			else
++				gpio_set_value(pw->reset_gpio, 0);
++		}
++
++		usleep_range(10, 10);
++
++		if (pw->dvdd)
++			regulator_disable(pw->dvdd);
++		if (pw->iovdd)
++			regulator_disable(pw->iovdd);
++		if (pw->avdd)
++			regulator_disable(pw->avdd);
++	}
++
++	pw->state = SWITCH_OFF;
++
++	return 0;
++}
++
+ static int dioneir_power_put(struct tegracam_device *tc_dev)
+ {
+ 	struct camera_common_data *s_data = tc_dev->s_data;
+@@ -421,7 +536,7 @@ static int dioneir_power_put(struct tegracam_device *tc_dev)
+ 	if (unlikely(!pw))
+ 		return -EFAULT;
+ 
+-	dioneir_power_off(s_data);
++	s_data->ops->power_off(s_data);
+ 
+ 	if (likely(pw->dvdd))
+ 		devm_regulator_put(pw->dvdd);
+@@ -949,6 +1064,21 @@ static struct camera_common_sensor_ops dione640_common_ops = {
+ 	.stop_streaming = dioneir_stop_streaming,
+ };
+ 
++static struct camera_common_sensor_ops dione640_reva_common_ops = {
++	.numfrmfmts = ARRAY_SIZE(dioneir_frmfmt_common),
++	.frmfmt_table = dioneir_frmfmt_common,
++	.power_on = dioneir_power_on_reva,
++	.power_off = dioneir_power_off_reva,
++	.write_reg = dioneir_write_reg,
++	.read_reg = dioneir_read_reg,
++	.parse_dt = dioneir_parse_dt,
++	.power_get = dioneir_power_get,
++	.power_put = dioneir_power_put,
++	.set_mode = dione640_set_mode,
++	.start_streaming = dioneir_start_streaming,
++	.stop_streaming = dioneir_stop_streaming,
++};
++
+ static struct camera_common_sensor_ops dione1280_common_ops = {
+ 	.numfrmfmts = ARRAY_SIZE(dioneir_frmfmt_common),
+ 	.frmfmt_table = dioneir_frmfmt_common,
+@@ -1205,13 +1335,13 @@ static int dioneir_board_setup(struct dione_struct *priv)
+ 		}
+ 	}
+ 
+-	err = dioneir_power_on(s_data);
++	err = s_data->ops->power_on(s_data);
+ 	if (err) {
+ 		dev_err(dev, "error during power on sensor (%d)\n", err);
+ 		goto err_power_on;
+ 	}
+ 
+-	if (s_data->ops == &dione640_common_ops)
++	if ((s_data->ops == &dione640_common_ops) || (s_data->ops == &dione640_reva_common_ops))
+ 		err = detect_dione640(priv);
+ 
+ 	if (s_data->ops == &dione1280_common_ops)
+@@ -1236,7 +1366,7 @@ static int dioneir_board_setup(struct dione_struct *priv)
+ 	}
+ 
+ err_reg_probe:
+-	dioneir_power_off(s_data);
++	s_data->ops->power_off(s_data);
+ 
+ err_power_on:
+ 	if (pdata->mclk_name)
+@@ -1346,6 +1476,9 @@ static int dioneir_probe(struct i2c_client *client,
+ 	if (!tc_dev)
+ 		tc_dev = dioneir_probe_one(priv, &dione1280_common_ops);
+ 
++	if (!tc_dev)
++		tc_dev = dioneir_probe_one(priv, &dione640_reva_common_ops);
++
+ 	if (!tc_dev)
+ 		dev_err(dev, "%s: error, no sensor found\n", __func__);
+ 	else {
+-- 
+2.25.1
+
