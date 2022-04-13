@@ -18,6 +18,7 @@
       $ bitbake-layers add-layer ../meta-openembedded/meta-oe/
       $ bitbake-layers add-layer ../meta-pcbd-tegra/meta/
       $ bitbake-layers add-layer ../meta-openembedded/meta-python/
+      $ bitbake-layers add-layer ../meta-openembedded/meta-networking/
       $ bitbake core-image-weston
 
     Fixing (eventual) libglvnd download issue:

@@ -8,6 +8,7 @@ PACKAGE_CLASSES ?= "package_deb"
 EXTRA_IMAGE_FEATURES ?= "debug-tweaks"
 
 DISTRO_FEATURES = "x11 opengl wayland"
+include conf/machine/${MACHINE}-extra.conf
 
 USER_CLASSES ?= "buildstats image-mklibs image-prelink"
 IMAGE_CLASSES += "image_types_tegra"

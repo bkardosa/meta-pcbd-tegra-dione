@@ -12,5 +12,8 @@ IMAGE_INSTALL_append = " \
                        python3 \
                        python3-pip \
                        python3-smbus \
+                       mdns \
+                       avahi-daemon \
+                       avahi-utils \
                        "
 
