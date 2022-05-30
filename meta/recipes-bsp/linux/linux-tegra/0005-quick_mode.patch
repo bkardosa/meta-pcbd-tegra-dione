@@ -1,17 +1,33 @@
-From abe85065ed2a402ef596d568caa6fafc7632b849 Mon Sep 17 00:00:00 2001
+From b9c9de2a514f3c70d7b98ddcf8f5365a099d5f13 Mon Sep 17 00:00:00 2001
 From: Botond Kardos <bkardos70@gmail.com>
 Date: Fri, 27 May 2022 16:51:27 +0200
 Subject: [PATCH] fix quick_mode handling
 
 ---
- nvidia/drivers/media/i2c/dione_ir.c | 181 +++++++++++++++-------------
- 1 file changed, 94 insertions(+), 87 deletions(-)
+ nvidia/drivers/media/i2c/dione_ir.c | 215 +++++++++++++++-------------
+ 1 file changed, 115 insertions(+), 100 deletions(-)
 
 diff --git a/nvidia/drivers/media/i2c/dione_ir.c b/nvidia/drivers/media/i2c/dione_ir.c
-index 215e4e444b65..1b198d6e1c88 100644
+index 215e4e444b65..f1764cf86a51 100644
 --- a/nvidia/drivers/media/i2c/dione_ir.c
 +++ b/nvidia/drivers/media/i2c/dione_ir.c
-@@ -313,48 +313,50 @@ static int dioneir_power_on(struct camera_common_data *s_data)
+@@ -142,6 +142,7 @@ struct dione_struct {
+ 	struct camera_common_data	*s_data;
+ 	struct tegracam_device		*tc_dev;
+ 	ktime_t					start_up;
++	int						quick_mode;
+ };
+ 
+ 
+@@ -302,6 +303,7 @@ static int dioneir_power_on(struct camera_common_data *s_data)
+ 	struct camera_common_power_rail *pw = s_data->power;
+ 	struct camera_common_pdata *pdata = s_data->pdata;
+ 	struct device *dev = s_data->dev;
++	struct dione_struct *priv = (struct dione_struct *)s_data->priv;
+ 
+ 	dev_dbg(dev, "%s: power on\n", __func__);
+ 	if (pdata && pdata->power_on) {
+@@ -313,48 +315,50 @@ static int dioneir_power_on(struct camera_common_data *s_data)
  		return err;
  	}
  
@@ -21,7 +37,7 @@ index 215e4e444b65..1b198d6e1c88 100644
 -		else
 -			gpio_set_value(pw->reset_gpio, 1);
 -	}
-+	if (!quick_mode) {
++	if (!priv->quick_mode) {
 +		if (pw->reset_gpio) {
 +			if (gpio_cansleep(pw->reset_gpio))
 +				gpio_set_value_cansleep(pw->reset_gpio, 1);
@@ -95,7 +111,7 @@ index 215e4e444b65..1b198d6e1c88 100644
  
  	pw->state = SWITCH_ON;
  
-@@ -372,11 +374,6 @@ static int dioneir_power_on(struct camera_common_data *s_data)
+@@ -372,17 +376,13 @@ static int dioneir_power_on(struct camera_common_data *s_data)
  	return -ENODEV;
  }
  
@@ -107,7 +123,14 @@ index 215e4e444b65..1b198d6e1c88 100644
  static int dioneir_power_off(struct camera_common_data *s_data)
  {
  	int err = 0;
-@@ -393,21 +390,23 @@ static int dioneir_power_off(struct camera_common_data *s_data)
+ 	struct camera_common_power_rail *pw = s_data->power;
+ 	struct camera_common_pdata *pdata = s_data->pdata;
+ 	struct device *dev = s_data->dev;
++	struct dione_struct *priv = (struct dione_struct *)s_data->priv;
+ 
+ 	dev_dbg(dev, "%s: power off\n", __func__);
+ 
+@@ -393,21 +393,23 @@ static int dioneir_power_off(struct camera_common_data *s_data)
  			return err;
  		}
  	} else {
@@ -117,7 +140,7 @@ index 215e4e444b65..1b198d6e1c88 100644
 -			else
 -				gpio_set_value(pw->reset_gpio, 1);
 -		}
-+		if (!quick_mode) {
++		if (!priv->quick_mode) {
 +			if (pw->reset_gpio) {
 +				if (gpio_cansleep(pw->reset_gpio))
 +					gpio_set_value_cansleep(pw->reset_gpio, 1);
@@ -144,7 +167,15 @@ index 215e4e444b65..1b198d6e1c88 100644
  	}
  
  	pw->state = SWITCH_OFF;
-@@ -432,48 +431,50 @@ static int dioneir_power_on_reva(struct camera_common_data *s_data)
+@@ -421,6 +423,7 @@ static int dioneir_power_on_reva(struct camera_common_data *s_data)
+ 	struct camera_common_power_rail *pw = s_data->power;
+ 	struct camera_common_pdata *pdata = s_data->pdata;
+ 	struct device *dev = s_data->dev;
++	struct dione_struct *priv = (struct dione_struct *)s_data->priv;
+ 
+ 	dev_dbg(dev, "%s: power on\n", __func__);
+ 	if (pdata && pdata->power_on) {
+@@ -432,48 +435,50 @@ static int dioneir_power_on_reva(struct camera_common_data *s_data)
  		return err;
  	}
  
@@ -154,7 +185,7 @@ index 215e4e444b65..1b198d6e1c88 100644
 -		else
 -			gpio_set_value(pw->reset_gpio, 0);
 -	}
-+	if (!quick_mode) {
++	if (!priv->quick_mode) {
 +		if (pw->reset_gpio) {
 +			if (gpio_cansleep(pw->reset_gpio))
 +				gpio_set_value_cansleep(pw->reset_gpio, 0);
@@ -229,17 +260,62 @@ index 215e4e444b65..1b198d6e1c88 100644
  
  	pw->state = SWITCH_ON;
  
-@@ -538,6 +539,9 @@ static int dioneir_power_put(struct tegracam_device *tc_dev)
+@@ -497,6 +502,7 @@ static int dioneir_power_off_reva(struct camera_common_data *s_data)
+ 	struct camera_common_power_rail *pw = s_data->power;
+ 	struct camera_common_pdata *pdata = s_data->pdata;
+ 	struct device *dev = s_data->dev;
++	struct dione_struct *priv = (struct dione_struct *)s_data->priv;
+ 
+ 	dev_dbg(dev, "%s: power off\n", __func__);
+ 
+@@ -507,21 +513,23 @@ static int dioneir_power_off_reva(struct camera_common_data *s_data)
+ 			return err;
+ 		}
+ 	} else {
+-		if (pw->reset_gpio) {
+-			if (gpio_cansleep(pw->reset_gpio))
+-				gpio_set_value_cansleep(pw->reset_gpio, 0);
+-			else
+-				gpio_set_value(pw->reset_gpio, 0);
+-		}
++		if (!priv->quick_mode) {
++			if (pw->reset_gpio) {
++				if (gpio_cansleep(pw->reset_gpio))
++					gpio_set_value_cansleep(pw->reset_gpio, 0);
++				else
++					gpio_set_value(pw->reset_gpio, 0);
++			}
+ 
+-		usleep_range(10, 10);
++			usleep_range(10, 10);
+ 
+-		if (pw->dvdd)
+-			regulator_disable(pw->dvdd);
+-		if (pw->iovdd)
+-			regulator_disable(pw->iovdd);
+-		if (pw->avdd)
+-			regulator_disable(pw->avdd);
++			if (pw->dvdd)
++				regulator_disable(pw->dvdd);
++			if (pw->iovdd)
++				regulator_disable(pw->iovdd);
++			if (pw->avdd)
++				regulator_disable(pw->avdd);
++		}
+ 	}
+ 
+ 	pw->state = SWITCH_OFF;
+@@ -538,6 +546,9 @@ static int dioneir_power_put(struct tegracam_device *tc_dev)
  	if (unlikely(!pw))
  		return -EFAULT;
  
 +	/* really power off module when removing the driver */
-+	quick_mode = 0;
++	priv->quick_mode = 0;
 +
  	s_data->ops->power_off(s_data);
  
  	if (likely(pw->dvdd))
-@@ -1328,6 +1332,7 @@ static int dioneir_board_setup(struct dione_struct *priv)
+@@ -1328,6 +1339,7 @@ static int dioneir_board_setup(struct dione_struct *priv)
  	struct regmap *ctl_regmap = s_data->regmap;
  	u32 reg_val;
  	int err = 0;
@@ -247,19 +323,25 @@ index 215e4e444b65..1b198d6e1c88 100644
  
  	if (pdata->mclk_name) {
  		err = camera_common_mclk_enable(s_data);
-@@ -1337,7 +1342,11 @@ static int dioneir_board_setup(struct dione_struct *priv)
+@@ -1337,7 +1349,11 @@ static int dioneir_board_setup(struct dione_struct *priv)
  		}
  	}
  
-+	my_qm = quick_mode;
-+	quick_mode = 0;
++	my_qm = priv->quick_mode;
++	priv->quick_mode = 0;
  	err = s_data->ops->power_on(s_data);
-+	quick_mode = my_qm;
++	priv->quick_mode = my_qm;
 +
  	if (err) {
  		dev_err(dev, "error during power on sensor (%d)\n", err);
  		goto err_power_on;
-@@ -1407,8 +1416,6 @@ static struct tegracam_device *dioneir_probe_one( struct dione_struct *priv,
+@@ -1402,13 +1418,12 @@ static struct tegracam_device *dioneir_probe_one( struct dione_struct *priv,
+ 	if (!tc_dev)
+ 		return NULL;
+ 
++	priv->quick_mode = quick_mode;
+ 	tc_dev->client = priv->tc35_client;
+ 	tc_dev->dev = dev;
  	strncpy(tc_dev->name, "dione_ir", sizeof(tc_dev->name));
  	tc_dev->dev_regmap_config = &ctl_regmap_config;
  	tc_dev->sensor_ops = ops;
